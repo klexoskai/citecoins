@@ -49,7 +49,6 @@ You can split into multiple repos later (e.g., `citecoins-contracts`, `citecoins
 ## High-Level Architecture
 
 ### On-chain (Solidity, L2)
-
 **Contracts**
 1. `CitecoinToken` (ERC-20)
    - The staking/reward token.
@@ -65,7 +64,7 @@ You can split into multiple repos later (e.g., `citecoins-contracts`, `citecoins
 
 3. `StakingRounds` (or `StakingMarket`)
    - Defines staking windows (“rounds”)
-   - Accepts stakes for `(roundId, articleId)`
+   - Accepts stakes for (roundId, articleId)
    - Tracks total stake per article per round
    - Enforces:
      - staking start/end timestamps
@@ -96,7 +95,6 @@ You can split into multiple repos later (e.g., `citecoins-contracts`, `citecoins
 ---
 
 ### Off-chain
-
 1. **Storage**
    - Article content + evidence stored off-chain (recommended: IPFS + pinning, or Arweave).
    - The chain stores CIDs/hashes so content is tamper-evident.
