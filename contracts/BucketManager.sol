@@ -7,27 +7,21 @@ contract BucketManager {
     event BucketCreated(uint256 indexed bucketId, address indexed creator, string topicURI, uint256 creationStake);
     event BucketFunded(uint256 indexed bucketId, address indexed funder, uint256 amount);
     event BucketWithdrawn(uint256 indexed bucketId, address indexed to, uint256 amount);
+    event BucketDeactivated(uint256 indexed bucketId, bool creatorSlashed);
 
     struct Bucket {
         address creator;
         string topicURI;
-
-        uint64 epochDuration; // optional, not strictly required for explicit epochs
-
         uint256 creationStake;
-
-        uint16 feeBps;         // fee applied to losing redistribution at finalize (0..10000)
-        uint32 minArticles;    // participation threshold
-        uint256 minTotalStake; // participation threshold
-
-        uint256 fundedRewards; // funded tokens held by this contract for this bucket
-
+        uint16 feeBps;
+        uint32 minArticles;
+        uint256 minTotalStake;
+        uint256 fundedRewards;
         bool active;
     }
 
     ICitecoinToken public immutable token;
-
-    /// @dev Rewards contract authorized to withdraw bucket funds for payouts.
+    address public immutable deployer;
     address public rewards;
 
     uint256 public nextBucketId = 1;
@@ -35,6 +29,7 @@ contract BucketManager {
 
     constructor(address tokenAddress) {
         token = ICitecoinToken(tokenAddress);
+        deployer = msg.sender;
     }
 
     modifier onlyRewards() {
@@ -43,15 +38,13 @@ contract BucketManager {
     }
 
     function setRewards(address rewardsAddress) external {
-        // demo-simple: allow one-time set by deployer pattern.
-        // For production: Ownable + onlyOwner + one-time set.
+        require(msg.sender == deployer, "not deployer");
         require(rewards == address(0), "rewards already set");
         rewards = rewardsAddress;
     }
 
     function createBucket(
         string calldata topicURI,
-        uint64 epochDuration,
         uint256 creationStake,
         uint16 feeBps,
         uint32 minArticles,
@@ -67,7 +60,6 @@ contract BucketManager {
         buckets[bucketId] = Bucket({
             creator: msg.sender,
             topicURI: topicURI,
-            epochDuration: epochDuration,
             creationStake: creationStake,
             feeBps: feeBps,
             minArticles: minArticles,
@@ -88,17 +80,47 @@ contract BucketManager {
         emit BucketFunded(bucketId, msg.sender, amount);
     }
 
-    /// @notice Withdraw bucket funds to a payout contract (Rewards).
-    /// @dev Called only by Rewards during finalization (writer pool funding).
+    /// @dev Must be called BEFORE deactivateBucket in the same finalization flow.
     function withdrawBucketFunds(uint256 bucketId, address to, uint256 amount) external onlyRewards {
         Bucket storage b = buckets[bucketId];
         require(b.active, "bucket inactive");
         require(amount > 0, "amount");
         require(b.fundedRewards >= amount, "insufficient bucket funds");
-
         b.fundedRewards -= amount;
         require(token.transfer(to, amount), "transfer");
-
         emit BucketWithdrawn(bucketId, to, amount);
+    }
+
+    function deactivateBucket(
+        uint256 bucketId,
+        uint256 actualArticles,
+        uint256 actualTotalStake
+    ) external onlyRewards {
+        Bucket storage b = buckets[bucketId];
+        require(b.active, "already inactive");
+        b.active = false;
+
+        bool underParticipated = actualArticles < b.minArticles ||
+                                 actualTotalStake < b.minTotalStake;
+
+        if (b.creationStake > 0) {
+            if (underParticipated) {
+                uint256 slash = b.creationStake / 2;
+                uint256 ret   = b.creationStake - slash;
+                b.creationStake = 0;
+                if (ret > 0)   token.transfer(b.creator, ret);
+                if (slash > 0) token.burn(slash);
+            } else {
+                uint256 ret = b.creationStake;
+                b.creationStake = 0;
+                token.transfer(b.creator, ret);
+            }
+        }
+
+        emit BucketDeactivated(bucketId, underParticipated);
+    }
+
+    function getBucket(uint256 bucketId) external view returns (Bucket memory) {
+        return buckets[bucketId];
     }
 }
