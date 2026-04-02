@@ -12,26 +12,18 @@ contract ArticleRegistry {
         uint256 indexed bucketId,
         uint256 indexed epochId,
         address author,
-        string  contentCID,
-        string  manifestCID,
-        bytes32 contentHash,
-        bytes32 manifestHash,
-        uint256 writerStake
+        string  contentCID
     );
-    event ArticleEligibilityUpdated(uint256 indexed articleId, bool eligible);
 
     // ── Storage ───────────────────────────────────────────────────────────────
     struct Article {
         address author;
         uint256 bucketId;
         uint256 epochId;
-        string  contentCID;
-        string  manifestCID;
-        bytes32 contentHash;
-        bytes32 manifestHash;
-        uint64  publishedAt;
-        uint256 writerStake;
-        bool    eligible;
+        string  contentCID;  // IPFS CID of article body
+        bytes32 contentHash; // keccak256 of content — proves no retroactive edits
+        uint256 writerStake; // tokens locked — slashed by Rewards if ranked out
+        bool    eligible;    // false = excluded from reward distribution
     }
 
     IEpochManager  public immutable epochManager;
@@ -42,9 +34,6 @@ contract ArticleRegistry {
     uint256 public constant MIN_WRITER_STAKE = 10e18;
 
     uint256 public nextArticleId = 1;
-
-    // internal — not public, so no auto-generated struct getter
-    // cross-contract reads go through getArticle() which returns fields
     mapping(uint256 => Article)   internal _articles;
     mapping(uint256 => uint256[]) public   epochArticles;
 
@@ -71,59 +60,48 @@ contract ArticleRegistry {
 
     // ── Core: publish article ─────────────────────────────────────────────────
     /// @notice Submit an article during the submission phase of an epoch.
-    /// @dev contentHash and manifestHash stored on-chain as tamper evidence.
-    ///      No editArticle() function exists — immutability is intentional.
-    ///      Content lives on IPFS; only the hash commitment is on-chain.
+    /// @dev contentHash stored on-chain as tamper evidence —
+    ///      readers can verify article content matches what was submitted.
+    ///      No editArticle() exists — immutability after submission is intentional.
     /// @param epochId      Epoch this article is submitted to.
     /// @param contentCID   IPFS CID of the article body.
-    /// @param manifestCID  IPFS CID of the evidence manifest (must be non-empty).
-    /// @param contentHash  keccak256 of article content — proves no retroactive edits.
-    /// @param manifestHash keccak256 of manifest.
+    /// @param contentHash  keccak256 of article content.
     /// @param writerStake  Tokens locked — slashed if ranked outside reward positions.
     function publishArticle(
-        uint256  epochId,
-        string   calldata contentCID,
-        string   calldata manifestCID,
-        bytes32  contentHash,
-        bytes32  manifestHash,
-        uint256  writerStake
+        uint256 epochId,
+        string  calldata contentCID,
+        bytes32 contentHash,
+        uint256 writerStake
     ) external returns (uint256 articleId) {
         require(
             epochManager.currentPhase(epochId) == IEpochManager.Phase.Submission,
             "not in submission window"
         );
-        require(bytes(manifestCID).length > 0, "manifest required");
-        require(manifestHash != bytes32(0),    "manifest hash required");
-        require(contentHash  != bytes32(0),    "content hash required");
+        require(bytes(contentCID).length > 0, "contentCID required");
+        require(contentHash != bytes32(0),    "contentHash required");
         require(writerStake >= MIN_WRITER_STAKE, "stake too low");
         require(
             token.transferFrom(msg.sender, address(this), writerStake),
             "stake transfer failed"
         );
 
-        IEpochManager.EpochConfig memory e = epochManager.getEpoch(epochId);
+        // Read bucketId from epoch — stored on article for convenience
+        (uint256 bucketId,,,,,) = epochManager.getEpoch(epochId);
 
         articleId = nextArticleId++;
         _articles[articleId] = Article({
-            author:       msg.sender,
-            bucketId:     e.bucketId,
-            epochId:      epochId,
-            contentCID:   contentCID,
-            manifestCID:  manifestCID,
-            contentHash:  contentHash,
-            manifestHash: manifestHash,
-            publishedAt:  uint64(block.timestamp),
-            writerStake:  writerStake,
-            eligible:     true
+            author:      msg.sender,
+            bucketId:    bucketId,
+            epochId:     epochId,
+            contentCID:  contentCID,
+            contentHash: contentHash,
+            writerStake: writerStake,
+            eligible:    true
         });
 
         epochArticles[epochId].push(articleId);
 
-        emit ArticlePublished(
-            articleId, e.bucketId, epochId, msg.sender,
-            contentCID, manifestCID, contentHash, manifestHash,
-            writerStake
-        );
+        emit ArticlePublished(articleId, bucketId, epochId, msg.sender, contentCID);
     }
 
     // ── Rewards interface ─────────────────────────────────────────────────────
@@ -145,12 +123,6 @@ contract ArticleRegistry {
         require(token.transfer(rewards, slashed), "transfer failed");
     }
 
-    /// @notice Mark article ineligible — excludes from reward distribution.
-    function setEligibility(uint256 articleId, bool eligible) external onlyRewards {
-        _articles[articleId].eligible = eligible;
-        emit ArticleEligibilityUpdated(articleId, eligible);
-    }
-
     // ── View helpers ──────────────────────────────────────────────────────────
     /// @notice Returns all article IDs submitted to an epoch.
     function getEpochArticles(uint256 epochId)
@@ -159,29 +131,14 @@ contract ArticleRegistry {
         return epochArticles[epochId];
     }
 
-    /// @notice Count of eligible articles in an epoch.
-    ///         Used by Rewards to check minArticles threshold before finalization.
-    function eligibleArticleCount(uint256 epochId)
-        external view returns (uint256 count)
-    {
-        uint256[] memory ids = epochArticles[epochId];
-        for (uint256 i = 0; i < ids.length; i++) {
-            if (_articles[ids[i]].eligible) count++;
-        }
-    }
-
     /// @notice Returns article fields individually — avoids cross-contract struct errors.
-    /// @dev Rewards.sol destructures this return instead of using a struct type.
     function getArticle(uint256 articleId)
         external view returns (
             address author,
             uint256 epochId,
             uint256 bucketId,
             string  memory contentCID,
-            string  memory manifestCID,
             bytes32 contentHash,
-            bytes32 manifestHash,
-            uint64  publishedAt,
             uint256 writerStake,
             bool    eligible
         )
@@ -192,10 +149,7 @@ contract ArticleRegistry {
             a.epochId,
             a.bucketId,
             a.contentCID,
-            a.manifestCID,
             a.contentHash,
-            a.manifestHash,
-            a.publishedAt,
             a.writerStake,
             a.eligible
         );

@@ -7,7 +7,6 @@ import "./interfaces/IEpochManager.sol";
 import "./interfaces/IArticleRegistry.sol";
 import "./interfaces/IStaking.sol";
 import "./libraries/MathUtils.sol";
-import "./libraries/TimeWeight.sol";
 
 contract Rewards {
 
@@ -16,9 +15,7 @@ contract Rewards {
         uint256 indexed epochId,
         uint256 indexed bucketId,
         uint8   nPaid,
-        uint256 S_win,
-        uint256 S_lose,
-        uint256 feeTaken
+        uint256 readerPool
     );
     event WriterClaimed(
         uint256 indexed epochId,
@@ -37,11 +34,8 @@ contract Rewards {
         bool      finalized;
         uint8     nPaid;
         uint256[] winners;    // articleIds ordered rank 1..nPaid
-        uint256   S_win;      // total raw stake on winning articles
-        uint256   S_lose;     // total raw stake on losing articles
-        uint256   feeTaken;   // platform fee taken from S_lose
         uint256   writerPool; // funded from bucket at finalize-time
-        uint256   readerPool; // S_lose - feeTaken — redistributed to winning readers
+        uint256   readerPool; // losing reader stakes redistributed to winners
     }
 
     ICitecoinToken   public immutable token;
@@ -50,9 +44,9 @@ contract Rewards {
     IArticleRegistry public immutable articleRegistry;
     IStaking         public immutable staking;
 
-    mapping(uint256 => EpochResult)                      public results;
-    mapping(uint256 => mapping(uint256 => bool))         public writerClaimed;
-    mapping(uint256 => mapping(address => bool))         public readerClaimed;
+    mapping(uint256 => EpochResult)                  public results;
+    mapping(uint256 => mapping(uint256 => bool))     public writerClaimed;
+    mapping(uint256 => mapping(address => bool))     public readerClaimed;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     constructor(
@@ -70,97 +64,109 @@ contract Rewards {
     }
 
     // ── Finalization ──────────────────────────────────────────────────────────
-    /// @notice Finalize an epoch — rank articles, collect loser stakes, fund writer pool.
-    /// @dev Callable by anyone once epoch has ended. Permissionless so no single
-    ///      party can block reward distribution.
+    /// @notice Finalize epoch — rank articles, slash losers, distribute writer pool.
+    /// @dev Callable by anyone once epoch has ended.
+    ///      Permissionless so no single party can block reward distribution.
     /// @param epochId          Epoch to finalize.
     /// @param writerPoolAmount Tokens to pull from bucket funds for writer rewards.
     function finalizeEpoch(uint256 epochId, uint256 writerPoolAmount) external {
         EpochResult storage r = results[epochId];
         require(!r.finalized, "already finalized");
-
         require(
             epochManager.currentPhase(epochId) == IEpochManager.Phase.Ended,
             "epoch not ended yet"
         );
 
-        IEpochManager.EpochConfig memory e = epochManager.getEpoch(epochId);
-        (,,, uint16 feeBps,,,, ) = bucketManager.getBucket(e.bucketId);
+        (uint256 bucketId,,,,,) = epochManager.getEpoch(epochId);
 
         // ── Step 1: collect eligible articles ────────────────────────────────
-        uint256[] memory articleIds   = articleRegistry.getEpochArticles(epochId);
-        uint256          eligibleCount = articleRegistry.eligibleArticleCount(epochId);
+        uint256[] memory articleIds = articleRegistry.getEpochArticles(epochId);
+        uint256 eligibleCount = 0;
+        for (uint256 i = 0; i < articleIds.length; i++) {
+            (,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
+            if (el) eligibleCount++;
+        }
         require(eligibleCount > 0, "no eligible articles");
 
         uint256[] memory eligible = new uint256[](eligibleCount);
         uint256 idx = 0;
         for (uint256 i = 0; i < articleIds.length; i++) {
-            // Use destructured return to avoid IArticleRegistry.Article struct error
-            (,,,,,,,,, bool eligible_) = articleRegistry.getArticle(articleIds[i]);
-            if (eligible_) eligible[idx++] = articleIds[i];
+            (,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
+            if (el) eligible[idx++] = articleIds[i];
         }
 
-        // ── Step 2: rank top-n by effective (quadratic) stake ─────────────────
-        uint8     nPaid         = MathUtils.winnersCount(eligibleCount);
-        uint256[] memory winnersOrdered = _selectTopKByEffStake(
-            epochId, eligible, eligibleCount, nPaid
-        );
+        // ── Step 2: rank top-n ────────────────────────────────────────────────
+        uint8     nPaid   = MathUtils.winnersCount(eligibleCount);
+        uint256[] memory winners = _selectTopKByEffStake(epochId, eligible, eligibleCount, nPaid);
 
-        // ── Step 3: compute pools ─────────────────────────────────────────────
-        uint256 S_win = 0;
-        for (uint256 i = 0; i < winnersOrdered.length; i++) {
-            (,, uint256 rawTrue, uint256 rawFalse) = _articleStakeSplit(epochId, winnersOrdered[i]);
-            S_win += rawTrue + rawFalse;
-        }
+        // ── Steps 3-7: pools, slashing, wiring — extracted to reduce stack ───
+        uint256 readerPool = _finalizeInner(epochId, bucketId, articleIds, winners, writerPoolAmount);
 
-        uint256 totalRaw   = staking.totalRawStakeByEpoch(epochId);
-        uint256 S_lose     = totalRaw - S_win;
-        uint256 feeTaken   = (S_lose * feeBps) / 10_000;
-        uint256 readerPool = S_lose - feeTaken;
-
-        // ── Step 4: slash losing readers ─────────────────────────────────────
-        _slashLosers(epochId, articleIds, winnersOrdered);
-
-        // ── Step 5: settle writer stakes ──────────────────────────────────────
-        _settleWriterStakes(epochId, articleIds, winnersOrdered, nPaid);
-
-        // ── Step 6: pull writer pool from bucket ──────────────────────────────
-        if (writerPoolAmount > 0) {
-            bucketManager.withdrawBucketFunds(e.bucketId, address(this), writerPoolAmount);
-        }
-
-        // ── Step 7: deactivate bucket (must be AFTER withdrawBucketFunds) ─────
-        bucketManager.deactivateBucket(e.bucketId, eligibleCount, totalRaw);
-
-        // ── Step 8: mark epoch finalized — prevents double finalization ───────
+        // ── Step 8: mark finalized ────────────────────────────────────────────
         epochManager.markFinalized(epochId);
 
         // ── Step 9: store results ─────────────────────────────────────────────
         r.finalized  = true;
         r.nPaid      = nPaid;
-        r.winners    = winnersOrdered;
-        r.S_win      = S_win;
-        r.S_lose     = S_lose;
-        r.feeTaken   = feeTaken;
+        r.winners    = winners;
         r.writerPool = writerPoolAmount;
         r.readerPool = readerPool;
 
-        emit EpochFinalized(epochId, e.bucketId, nPaid, S_win, S_lose, feeTaken);
+        emit EpochFinalized(epochId, bucketId, nPaid, readerPool);
+    }
+
+    /// @dev Extracted from finalizeEpoch to avoid stack-too-deep.
+    ///      Handles pool computation, slashing, writer settlement, and bucket wiring.
+    function _finalizeInner(
+        uint256          epochId,
+        uint256          bucketId,
+        uint256[] memory articleIds,
+        uint256[] memory winners,
+        uint256          writerPoolAmount
+    ) internal returns (uint256 readerPool) {
+        // ── Step 3: compute pools ─────────────────────────────────────────────
+        uint256 S_win = 0;
+        for (uint256 i = 0; i < winners.length; i++) {
+            S_win += _rawStakeOnArticle(epochId, winners[i]);
+        }
+        uint256 S_lose = 0;
+        for (uint256 i = 0; i < articleIds.length; i++) {
+            if (_rankOf(winners, articleIds[i]) == 0) {
+                S_lose += _rawStakeOnArticle(epochId, articleIds[i]);
+            }
+        }
+        uint256 feeTaken = (S_lose * bucketManager.FEE_BPS()) / 10_000;
+        readerPool = S_lose - feeTaken;
+
+        // ── Step 4: slash losing readers ─────────────────────────────────────
+        _slashLosers(epochId, articleIds, winners);
+
+        // ── Step 5: settle writer stakes ──────────────────────────────────────
+        uint8 nPaid = uint8(winners.length);
+        _settleWriterStakes(epochId, articleIds, winners, nPaid);
+
+        // ── Step 6: pull writer pool from bucket ──────────────────────────────
+        if (writerPoolAmount > 0) {
+            bucketManager.withdrawBucketFunds(bucketId, address(this), writerPoolAmount);
+        }
+
+        // ── Step 7: deactivate bucket ─────────────────────────────────────────
+        bucketManager.deactivateBucket(bucketId);
     }
 
     // ── Writer claim ──────────────────────────────────────────────────────────
     /// @notice Winning writers claim their share of the bucket reward pool.
-    /// @dev Exponential decay: rank 1 = 50%, rank 2 = 25%, rank 3 = 12.5%...
-    ///      Writer stake is returned in _settleWriterStakes at finalize time.
+    /// @dev Exponential decay: rank 1 ≈ 50%, rank 2 ≈ 25%, rank 3 ≈ 12.5%...
+    ///      Writer stake returned separately in _settleWriterStakes at finalize.
     function claimWriter(uint256 epochId, uint256 articleId) external {
         EpochResult storage r = results[epochId];
         require(r.finalized,                        "not finalized");
         require(!writerClaimed[epochId][articleId], "already claimed");
 
-        // Destructure to avoid cross-contract struct error
-        (address author, uint256 artEpochId,,,,,,,, ) = articleRegistry.getArticle(articleId);
-        require(artEpochId  == epochId,    "epoch mismatch");
-        require(author      == msg.sender, "not author");
+        // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
+        (address author, uint256 artEpochId,,,,,) = articleRegistry.getArticle(articleId);
+        require(artEpochId == epochId,    "epoch mismatch");
+        require(author     == msg.sender, "not author");
 
         uint256 rank = _rankOf(r.winners, articleId);
         require(rank != 0, "article not a winner");
@@ -175,66 +181,32 @@ contract Rewards {
     }
 
     // ── Reader claim ──────────────────────────────────────────────────────────
-    /// @notice Winning readers claim stake back + time-weighted share of loser pool.
-    /// @dev Early voters earn up to 1.5x share. Losers get nothing — stake slashed at finalize.
+    /// @notice Winning readers claim stake back + proportional share of loser pool.
+    /// @dev Losers get nothing — stake already moved here during _slashLosers.
     function claimReader(uint256 epochId) external {
         EpochResult storage r = results[epochId];
         require(r.finalized,                         "not finalized");
         require(!readerClaimed[epochId][msg.sender], "already claimed");
 
-        IEpochManager.EpochConfig memory e = epochManager.getEpoch(epochId);
-
-        uint256 userWeightedWinning  = 0;
-        uint256 totalWeightedWinning = 0;
-
-        for (uint256 i = 0; i < r.winners.length; i++) {
-            uint256   articleId = r.winners[i];
-            address[] memory stakers = staking.getStakers(epochId, articleId);
-            (uint256 trueW, uint256 falseW) = staking.getTally(epochId, articleId);
-            bool articleTrueWon = trueW >= falseW;
-
-            for (uint256 j = 0; j < stakers.length; j++) {
-                // Destructure commit — avoids IStaking.Commit struct error
-                (
-                    ,               // commitHash
-                    uint256 rawStake,
-                    uint64  commitTime,
-                    bool    revealed,
-                    bool    voteTrue,
-                    // effectiveStake
-                ) = staking.getCommit(epochId, articleId, stakers[j]);
-
-                if (!revealed)                    continue;
-                if (voteTrue != articleTrueWon)   continue;
-
-                uint256 wBps = TimeWeight.weightBps(
-                    commitTime,
-                    e.stakingStart,
-                    e.stakingEnd,
-                    15000,  // 1.5x earliest voters
-                    10000   // 1.0x latest voters
-                );
-                uint256 weighted = (rawStake * wBps) / 10000;
-                totalWeightedWinning += weighted;
-
-                if (stakers[j] == msg.sender) {
-                    userWeightedWinning += weighted;
-                }
-            }
-        }
+        (uint256 userWeighted, uint256 totalWeighted) = _computeWeightedStakes(
+            epochId, r.winners, msg.sender
+        );
 
         readerClaimed[epochId][msg.sender] = true;
 
-        if (userWeightedWinning == 0) {
+        if (userWeighted == 0) {
+            // Lost — stake already slashed at finalize
             emit ReaderClaimed(epochId, msg.sender, 0);
             return;
         }
 
+        // Proportional share of reader pool
         uint256 rewardShare = 0;
-        if (totalWeightedWinning > 0 && r.readerPool > 0) {
-            rewardShare = (userWeightedWinning * r.readerPool) / totalWeightedWinning;
+        if (totalWeighted > 0 && r.readerPool > 0) {
+            rewardShare = (userWeighted * r.readerPool) / totalWeighted;
         }
 
+        // Winners also get their original stake back
         uint256 stakeBack = _getUserRawWinningStake(epochId, r.winners, msg.sender);
         uint256 payout    = stakeBack + rewardShare;
 
@@ -247,7 +219,7 @@ contract Rewards {
 
     // ── Internal: finalization helpers ────────────────────────────────────────
 
-    /// @dev Slash all stakers on non-winning articles — moves tokens here for redistribution.
+    /// @dev Slash all stakers on non-winning articles — moves tokens to this contract.
     function _slashLosers(
         uint256          epochId,
         uint256[] memory allArticles,
@@ -255,15 +227,11 @@ contract Rewards {
     ) internal {
         for (uint256 i = 0; i < allArticles.length; i++) {
             uint256 articleId = allArticles[i];
-            if (_rankOf(winners, articleId) != 0) continue;
+            if (_rankOf(winners, articleId) != 0) continue; // skip winners
 
             address[] memory stakers = staking.getStakers(epochId, articleId);
             for (uint256 j = 0; j < stakers.length; j++) {
-                (
-                    ,
-                    uint256 rawStake,
-                    ,,,
-                ) = staking.getCommit(epochId, articleId, stakers[j]);
+                (, uint256 rawStake,,,) = staking.getCommit(epochId, articleId, stakers[j]);
                 if (rawStake > 0) {
                     staking.slashStake(epochId, articleId, stakers[j]);
                 }
@@ -271,9 +239,10 @@ contract Rewards {
         }
     }
 
-    /// @dev Release winning writer stakes; slash losing writer stakes.
+    /// @dev Release winning writer stakes back to authors.
+    ///      Slash losing writer stakes to this contract.
     function _settleWriterStakes(
-        uint256          epochId,
+        uint256          /* epochId */,
         uint256[] memory allArticles,
         uint256[] memory winners,
         uint8            nPaid
@@ -282,8 +251,10 @@ contract Rewards {
             uint256 articleId = allArticles[i];
             uint256 rank      = _rankOf(winners, articleId);
 
-            // Destructure to get author without cross-contract struct error
-            (address author,,,,,,,,, ) = articleRegistry.getArticle(articleId);
+            // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
+            (address author,,,,, uint256 writerStake,) = articleRegistry.getArticle(articleId);
+
+            if (writerStake == 0) continue; // nothing to settle
 
             if (rank != 0 && rank <= nPaid) {
                 articleRegistry.releaseStake(articleId, author);
@@ -293,58 +264,78 @@ contract Rewards {
         }
     }
 
-    /// @dev Returns effective and raw stake split by vote direction for an article.
-    function _articleStakeSplit(uint256 epochId, uint256 articleId)
-        internal view
-        returns (uint256 trueEff, uint256 falseEff, uint256 trueRaw, uint256 falseRaw)
-    {
-        (trueEff, falseEff) = staking.getTally(epochId, articleId);
-        address[] memory stakers = staking.getStakers(epochId, articleId);
-
-        for (uint256 i = 0; i < stakers.length; i++) {
-            (
-                ,
-                uint256 rawStake,
-                ,
-                bool revealed,
-                bool voteTrue,
-            ) = staking.getCommit(epochId, articleId, stakers[i]);
-
-            if (!revealed) continue;
-            if (voteTrue) trueRaw  += rawStake;
-            else          falseRaw += rawStake;
+    /// @dev Compute proportional stakes for reader reward distribution.
+    ///      userWeighted  = caller's raw stake on winning articles (correct side)
+    ///      totalWeighted = all winners' raw stake on winning articles (correct side)
+    /// @dev Compute proportional stakes for reader reward distribution.
+    function _computeWeightedStakes(
+        uint256          epochId,
+        uint256[] memory winners,
+        address          user
+    ) internal view returns (uint256 userWeighted, uint256 totalWeighted) {
+        for (uint256 i = 0; i < winners.length; i++) {
+            (uint256 uw, uint256 tw) = _computeArticleWeights(epochId, winners[i], user);
+            userWeighted  += uw;
+            totalWeighted += tw;
         }
     }
 
-    /// @dev Sum raw stake for a reader on winning articles where they voted correctly.
+    /// @dev Extracted inner loop of _computeWeightedStakes — avoids stack-too-deep.
+    function _computeArticleWeights(
+        uint256 epochId,
+        uint256 articleId,
+        address user
+    ) internal view returns (uint256 userWeighted, uint256 totalWeighted) {
+        address[] memory stakers = staking.getStakers(epochId, articleId);
+        (uint256 trueW, uint256 falseW) = staking.getTally(epochId, articleId);
+        bool articleTrueWon = trueW >= falseW;
+
+        for (uint256 j = 0; j < stakers.length; j++) {
+            (, uint256 rawStake, bool revealed, bool voteTrue,)
+                = staking.getCommit(epochId, articleId, stakers[j]);
+
+            if (!revealed)                  continue;
+            if (voteTrue != articleTrueWon) continue;
+
+            totalWeighted += rawStake;
+            if (stakers[j] == user) userWeighted += rawStake;
+        }
+    }
+
+    /// @dev Sum raw stake for a user on winning articles where they voted correctly.
+    ///      This is the stake returned to winners — separate from the reward share.
     function _getUserRawWinningStake(
         uint256          epochId,
         uint256[] memory winners,
         address          user
     ) internal view returns (uint256 total) {
         for (uint256 i = 0; i < winners.length; i++) {
-            (
-                ,
-                uint256 rawStake,
-                ,
-                bool revealed,
-                bool voteTrue,
-            ) = staking.getCommit(epochId, winners[i], user);
+            (, uint256 rawStake, bool revealed, bool voteTrue,) = staking.getCommit(epochId, winners[i], user);
 
             if (!revealed) continue;
 
             (uint256 trueW, uint256 falseW) = staking.getTally(epochId, winners[i]);
-            bool articleTrueWon = trueW >= falseW;
-
-            if (voteTrue == articleTrueWon) {
+            if (voteTrue == (trueW >= falseW)) {
                 total += rawStake;
             }
         }
     }
 
+    /// @dev Total raw stake across all stakers on a single article.
+    ///      Used to compute S_win — sum over winning articles.
+    function _rawStakeOnArticle(uint256 epochId, uint256 articleId)
+        internal view returns (uint256 total)
+    {
+        address[] memory stakers = staking.getStakers(epochId, articleId);
+        for (uint256 i = 0; i < stakers.length; i++) {
+            (, uint256 rawStake,,,) = staking.getCommit(epochId, articleId, stakers[i]);
+            total += rawStake;
+        }
+    }
+
     // ── Internal: math ────────────────────────────────────────────────────────
 
-    /// @dev 1-based rank of articleId in winners. Returns 0 if not found.
+    /// @dev 1-based rank of articleId in winners array. 0 = not found.
     function _rankOf(uint256[] memory winners, uint256 articleId)
         internal pure returns (uint256)
     {
@@ -354,8 +345,9 @@ contract Rewards {
         return 0;
     }
 
-    /// @dev Exponential decay payout: weight(rank) = 2^(nPaid-rank) / sum of all weights.
-    ///      rank 1 → ~50%, rank 2 → ~25%, rank 3 → ~12.5% and so on.
+    /// @dev Exponential decay writer payout.
+    ///      rank 1 → 2^(nPaid-1), rank 2 → 2^(nPaid-2) ... normalised by sum.
+    ///      Example nPaid=3: rank1=4/7≈57%, rank2=2/7≈28%, rank3=1/7≈14%
     function _writerPayout(uint256 pool, uint8 rank, uint8 nPaid)
         internal pure returns (uint256)
     {
@@ -369,31 +361,31 @@ contract Rewards {
     }
 
     /// @dev Insertion sort to find top-k articles by quadratic effective stake.
-    ///      Tie-break 1: higher raw stake. Tie-break 2: lower articleId (earlier submission).
+    ///      Score = effective stake on the majority side (trueEff or falseEff).
+    ///      Tie-break 1: higher raw stake. Tie-break 2: lower articleId.
     function _selectTopKByEffStake(
         uint256          epochId,
         uint256[] memory eligible,
         uint256          eligibleCount,
         uint8            k
     ) internal view returns (uint256[] memory winners) {
-        winners          = new uint256[](k);
-        uint256[] memory scores = new uint256[](k);
-        uint256[] memory rawTie = new uint256[](k);
+        winners                  = new uint256[](k);
+        uint256[] memory scores  = new uint256[](k);
+        uint256[] memory rawTies = new uint256[](k);
 
         for (uint256 i = 0; i < eligibleCount; i++) {
             uint256 articleId = eligible[i];
-            (uint256 trueEff, uint256 falseEff, uint256 trueRaw, uint256 falseRaw)
-                = _articleStakeSplit(epochId, articleId);
 
+            (uint256 trueEff, uint256 falseEff) = staking.getTally(epochId, articleId);
             uint256 score = trueEff >= falseEff ? trueEff : falseEff;
-            uint256 raw   = trueRaw + falseRaw;
+            uint256 raw   = _rawStakeOnArticle(epochId, articleId);
 
             uint256 pos = k;
             for (uint256 j = 0; j < k; j++) {
                 if (
                     score > scores[j] ||
-                    (score == scores[j] && raw > rawTie[j]) ||
-                    (score == scores[j] && raw == rawTie[j] && articleId < winners[j])
+                    (score == scores[j] && raw > rawTies[j]) ||
+                    (score == scores[j] && raw == rawTies[j] && articleId < winners[j])
                 ) {
                     pos = j;
                     break;
@@ -404,11 +396,11 @@ contract Rewards {
                 for (uint256 s = k - 1; s > pos; s--) {
                     winners[s] = winners[s - 1];
                     scores[s]  = scores[s - 1];
-                    rawTie[s]  = rawTie[s - 1];
+                    rawTies[s] = rawTies[s - 1];
                 }
                 winners[pos] = articleId;
                 scores[pos]  = score;
-                rawTie[pos]  = raw;
+                rawTies[pos] = raw;
             }
         }
     }

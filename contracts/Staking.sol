@@ -14,8 +14,7 @@ contract Staking {
         uint256 indexed articleId,
         address indexed voter,
         bytes32 commitHash,
-        uint256 rawStake,
-        uint64  commitTime
+        uint256 rawStake
     );
     event VoteRevealed(
         uint256 indexed epochId,
@@ -29,7 +28,6 @@ contract Staking {
     struct Commit {
         bytes32 commitHash;     // keccak256(abi.encodePacked(articleId, voteTrue, salt))
         uint256 rawStake;       // tokens locked at commit time
-        uint64  commitTime;     // used for time-weighted bonus in Rewards
         bool    revealed;
         bool    voteTrue;       // only valid after revealed == true
         uint256 effectiveStake; // MathUtils.isqrt(rawStake), computed at reveal
@@ -41,16 +39,16 @@ contract Staking {
     address          public immutable deployer;
     address          public rewards;
 
+    // epochId => articleId => voter => Commit
     mapping(uint256 => mapping(uint256 => mapping(address => Commit))) public commits;
 
+    // epochId => articleId => staker addresses — iterated by Rewards at payout
     mapping(uint256 => mapping(uint256 => address[]))                  internal stakerList;
     mapping(uint256 => mapping(uint256 => mapping(address => bool)))   internal hasCommitted;
 
-    mapping(address => uint64) public firstInteraction;
-
+    // quadratic-weighted vote totals — read by Rewards for ranking
     mapping(uint256 => mapping(uint256 => uint256)) public totalTrueEffStake;
     mapping(uint256 => mapping(uint256 => uint256)) public totalFalseEffStake;
-    mapping(uint256 => uint256)                     public totalRawStakeByEpoch;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     constructor(
@@ -83,9 +81,10 @@ contract Staking {
     /// @dev commitHash = keccak256(abi.encodePacked(articleId, voteTrue, salt))
     ///      Vote is invisible until reveal — prevents last-minute bandwagoning.
     ///      Quadratic weighting (sqrt) is applied at reveal, not here.
+    ///      One commit per voter per article — no topping up after committing.
     /// @param epochId    Epoch this vote belongs to.
     /// @param articleId  Article being voted on.
-    /// @param commitHash Blinded commitment to the vote.
+    /// @param commitHash Blinded commitment — keccak256(articleId, voteTrue, salt).
     /// @param rawStake   Tokens to lock — sqrt applied at reveal for effective weight.
     function commitVote(
         uint256 epochId,
@@ -98,70 +97,53 @@ contract Staking {
             "not in staking window"
         );
 
-        // Destructure getArticle — avoids cross-contract struct error
-        (
-            ,               // author
-            uint256 artEpochId,
-            ,               // bucketId
-            ,               // contentCID
-            ,               // manifestCID
-            ,               // contentHash
-            ,               // manifestHash
-            ,               // publishedAt
-            ,               // writerStake
-            bool eligible
-        ) = articleRegistry.getArticle(articleId);
-
+        // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
+        (, uint256 artEpochId,,,,,bool eligible) = articleRegistry.getArticle(articleId);
         require(artEpochId == epochId, "article epoch mismatch");
         require(eligible,              "article ineligible");
 
         require(!hasCommitted[epochId][articleId][msg.sender], "already committed");
-        require(rawStake > 0,             "zero stake");
-        require(commitHash != bytes32(0), "empty commit");
+        require(rawStake   > 0,            "zero stake");
+        require(commitHash != bytes32(0),  "empty commit");
 
         require(
             token.transferFrom(msg.sender, address(this), rawStake),
             "stake transfer failed"
         );
 
-        if (firstInteraction[msg.sender] == 0) {
-            firstInteraction[msg.sender] = uint64(block.timestamp);
-        }
-
         commits[epochId][articleId][msg.sender] = Commit({
             commitHash:     commitHash,
             rawStake:       rawStake,
-            commitTime:     uint64(block.timestamp),
             revealed:       false,
             voteTrue:       false,
             effectiveStake: 0
         });
 
+        // Track staker list so Rewards can iterate all voters at finalization
         hasCommitted[epochId][articleId][msg.sender] = true;
         stakerList[epochId][articleId].push(msg.sender);
-        totalRawStakeByEpoch[epochId] += rawStake;
 
-        emit VoteCommitted(
-            epochId, articleId, msg.sender,
-            commitHash, rawStake, uint64(block.timestamp)
-        );
+        emit VoteCommitted(epochId, articleId, msg.sender, commitHash, rawStake);
     }
 
     // ── Phase 2: reveal ───────────────────────────────────────────────────────
     /// @notice Reveal committed vote by submitting plaintext vote + salt.
-    /// @dev Contract recomputes hash and verifies against stored commitment.
+    /// @dev Recomputes keccak256(articleId, voteTrue, salt) and verifies it
+    ///      matches the stored commitHash. Wrong vote or wrong salt both revert.
     ///      effectiveStake = sqrt(rawStake) — quadratic weighting applied here.
-    ///      New accounts (<10 days) receive 10% effective weight — sybil resistance.
+    ///      A whale with 10000 tokens gets sqrt(10000)=100 weight, not 10000.
     /// @param epochId   Epoch this vote belongs to.
     /// @param articleId Article being voted on.
     /// @param voteTrue  True = article is credible. False = not credible.
-    /// @param salt      Random bytes32 used when constructing the commit hash.
+    /// @param salt      Random bytes32 used when building the commit hash.
     function revealVote(
         uint256 epochId,
         uint256 articleId,
         bool    voteTrue,
         bytes32 salt
     ) external {
+        // Reveal allowed during Staking OR after Ended
+        // If reveal-only-during-staking: voter who misses window loses stake unfairly
         IEpochManager.Phase phase = epochManager.currentPhase(epochId);
         require(
             phase == IEpochManager.Phase.Staking ||
@@ -170,28 +152,24 @@ contract Staking {
         );
 
         Commit storage c = commits[epochId][articleId][msg.sender];
-        require(c.rawStake > 0, "no commit found");
-        require(!c.revealed,    "already revealed");
+        require(c.rawStake  > 0,  "no commit found");
+        require(!c.revealed,      "already revealed");
 
-        // Verify preimage — wrong vote or wrong salt both fail here
+        // Core commit-reveal verification
+        // If this passes, voter definitely committed this exact vote with this salt
         bytes32 expected = keccak256(abi.encodePacked(articleId, voteTrue, salt));
         require(expected == c.commitHash, "hash mismatch: wrong vote or salt");
 
-        // Quadratic weighting — whale with 10000 tokens gets sqrt(10000)=100 weight
-        // not 10000 weight, capping their outsized influence
+        // Quadratic weighting via MathUtils.isqrt (Babylonian method)
+        // Prevents whale dominance without requiring identity verification
+        // Future extension: oracle-based sybil resistance (e.g. Worldcoin)
         uint256 effStake = MathUtils.isqrt(c.rawStake);
-
-        // New-account dampening — accounts under 10 days get 10% weight
-        // Makes sybil attacks slow, expensive, and detectable on-chain
-        // Future extension: replace with oracle-based proof of personhood
-        if (_isNewAccount(msg.sender)) {
-            effStake = effStake / 10;
-        }
 
         c.revealed       = true;
         c.voteTrue       = voteTrue;
         c.effectiveStake = effStake;
 
+        // Update aggregates — read by Rewards._selectTopKByEffStake for ranking
         if (voteTrue) {
             totalTrueEffStake[epochId][articleId]  += effStake;
         } else {
@@ -202,15 +180,14 @@ contract Staking {
     }
 
     // ── Rewards interface ─────────────────────────────────────────────────────
-    /// @notice Returns all stakers for an article — Rewards iterates this for payouts.
+    /// @notice All stakers for an article — Rewards iterates this for payouts.
     function getStakers(uint256 epochId, uint256 articleId)
         external view returns (address[] memory)
     {
         return stakerList[epochId][articleId];
     }
 
-    /// @notice Returns commit fields individually — avoids cross-contract struct errors.
-    /// @dev Rewards.sol destructures this return instead of using a struct type.
+    /// @notice Commit fields returned individually — avoids cross-contract struct errors.
     function getCommit(
         uint256 epochId,
         uint256 articleId,
@@ -218,7 +195,6 @@ contract Staking {
     ) external view returns (
         bytes32 commitHash,
         uint256 rawStake,
-        uint64  commitTime,
         bool    revealed,
         bool    voteTrue,
         uint256 effectiveStake
@@ -227,14 +203,14 @@ contract Staking {
         return (
             c.commitHash,
             c.rawStake,
-            c.commitTime,
             c.revealed,
             c.voteTrue,
             c.effectiveStake
         );
     }
 
-    /// @notice Returns revealed vote tally for an article.
+    /// @notice Quadratic-weighted vote tally for an article.
+    ///         trueWeight and falseWeight are sqrt-weighted, not raw.
     function getTally(uint256 epochId, uint256 articleId)
         external view returns (uint256 trueWeight, uint256 falseWeight)
     {
@@ -244,7 +220,7 @@ contract Staking {
         );
     }
 
-    /// @notice Release stake back to voter — called by Rewards for winners.
+    /// @notice Return stake to winning voter — called by Rewards at claimReader.
     function releaseStake(uint256 epochId, uint256 articleId, address to)
         external onlyRewards
     {
@@ -264,14 +240,5 @@ contract Staking {
         slashed    = c.rawStake;
         c.rawStake = 0;
         require(token.transfer(rewards, slashed), "transfer failed");
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────────────
-    /// @dev True if account first interacted less than 10 days ago.
-    ///      firstInteraction set on first commitVote call.
-    function _isNewAccount(address account) internal view returns (bool) {
-        uint64 first = firstInteraction[account];
-        if (first == 0) return true;
-        return block.timestamp < uint256(first) + 10 days;
     }
 }
