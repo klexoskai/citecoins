@@ -13,9 +13,9 @@ contract CitecoinToken is ERC20 {
     event MinterGranted(address indexed account);
 
     // ── Constructor ───────────────────────────────────────────────────────────
-    constructor(uint256 initialSupply) ERC20("Citecoin", "CITE") {
+    constructor(address initialHolder, uint256 initialSupply) ERC20("Citecoin", "CITE") {
         deployer = msg.sender;
-        _mint(msg.sender, initialSupply);
+        _mint(initialHolder, initialSupply);
     }
 
     // ── Modifiers ─────────────────────────────────────────────────────────────
