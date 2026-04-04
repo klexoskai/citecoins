@@ -17,7 +17,7 @@ contract CitecoinsProtocol {
     Rewards         public rewards;
 
     constructor(uint256 initialSupply) {
-        token = new CitecoinToken(initialSupply);
+        token = new CitecoinToken(msg.sender, initialSupply);
 
         buckets = new BucketManager(address(token));
         epochs  = new EpochManager(address(buckets));
