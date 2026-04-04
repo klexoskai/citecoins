@@ -188,6 +188,7 @@ contract Rewards {
     // ── Reader claim ──────────────────────────────────────────────────────────
     function claimReader(uint256 epochId) external {
         EpochResult storage r = results[epochId];
+
         require(r.finalized, "not finalized");
         require(!readerClaimed[epochId][msg.sender], "already claimed");
 
