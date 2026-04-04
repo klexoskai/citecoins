@@ -11,7 +11,6 @@ contract Staking {
     // ── Events ────────────────────────────────────────────────────────────────
     event VoteCommitted(
         uint256 indexed epochId,
-        uint256 indexed articleId,
         address indexed voter,
         bytes32 commitHash,
         uint256 rawStake
@@ -20,7 +19,6 @@ contract Staking {
         uint256 indexed epochId,
         uint256 indexed articleId,
         address indexed voter,
-        bool    voteTrue,
         uint256 effectiveStake
     );
 
@@ -29,7 +27,7 @@ contract Staking {
         bytes32 commitHash;     // keccak256(abi.encodePacked(articleId, voteTrue, salt))
         uint256 rawStake;       // tokens locked at commit time
         bool    revealed;
-        bool    voteTrue;       // only valid after revealed == true
+        uint256 articleId;      // only set at reveal 
         uint256 effectiveStake; // MathUtils.isqrt(rawStake), computed at reveal
     }
 
@@ -40,15 +38,15 @@ contract Staking {
     address          public rewards;
 
     // epochId => articleId => voter => Commit
-    mapping(uint256 => mapping(uint256 => mapping(address => Commit))) public commits;
+    mapping(uint256 => mapping(address => Commit)) public commits;
 
     // epochId => articleId => staker addresses — iterated by Rewards at payout
     mapping(uint256 => mapping(uint256 => address[]))                  internal stakerList;
-    mapping(uint256 => mapping(uint256 => mapping(address => bool)))   internal hasCommitted;
+    // one commit per voter per epoch/article — tracks whether voter has already voted
+    mapping(uint256 => mapping(address => bool)) internal hasCommitted;
 
     // quadratic-weighted vote totals — read by Rewards for ranking
-    mapping(uint256 => mapping(uint256 => uint256)) public totalTrueEffStake;
-    mapping(uint256 => mapping(uint256 => uint256)) public totalFalseEffStake;
+    mapping(uint256 => mapping(uint256 => uint256)) public totalEffStake;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     constructor(
@@ -83,12 +81,10 @@ contract Staking {
     ///      Quadratic weighting (sqrt) is applied at reveal, not here.
     ///      One commit per voter per article — no topping up after committing.
     /// @param epochId    Epoch this vote belongs to.
-    /// @param articleId  Article being voted on.
     /// @param commitHash Blinded commitment — keccak256(articleId, voteTrue, salt).
     /// @param rawStake   Tokens to lock — sqrt applied at reveal for effective weight.
     function commitVote(
         uint256 epochId,
-        uint256 articleId,
         bytes32 commitHash,
         uint256 rawStake
     ) external {
@@ -97,12 +93,8 @@ contract Staking {
             "not in staking window"
         );
 
-        // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
-        (, uint256 artEpochId,,,,,bool eligible) = articleRegistry.getArticle(articleId);
-        require(artEpochId == epochId, "article epoch mismatch");
-        require(eligible,              "article ineligible");
+        require(!hasCommitted[epochId][msg.sender], "already committed");
 
-        require(!hasCommitted[epochId][articleId][msg.sender], "already committed");
         require(rawStake   > 0,            "zero stake");
         require(commitHash != bytes32(0),  "empty commit");
 
@@ -111,19 +103,19 @@ contract Staking {
             "stake transfer failed"
         );
 
-        commits[epochId][articleId][msg.sender] = Commit({
+        commits[epochId][msg.sender] = Commit({
             commitHash:     commitHash,
             rawStake:       rawStake,
             revealed:       false,
-            voteTrue:       false,
+            articleId:      0, // dummy value first, only set at reveal time
             effectiveStake: 0
         });
 
         // Track staker list so Rewards can iterate all voters at finalization
-        hasCommitted[epochId][articleId][msg.sender] = true;
-        stakerList[epochId][articleId].push(msg.sender);
+        hasCommitted[epochId][msg.sender] = true;
+        // stakerList[epochId][articleId].push(msg.sender);
 
-        emit VoteCommitted(epochId, articleId, msg.sender, commitHash, rawStake);
+        emit VoteCommitted(epochId, msg.sender, commitHash, rawStake);
     }
 
     // ── Phase 2: reveal ───────────────────────────────────────────────────────
@@ -134,12 +126,10 @@ contract Staking {
     ///      A whale with 10000 tokens gets sqrt(10000)=100 weight, not 10000.
     /// @param epochId   Epoch this vote belongs to.
     /// @param articleId Article being voted on.
-    /// @param voteTrue  True = article is credible. False = not credible.
     /// @param salt      Random bytes32 used when building the commit hash.
     function revealVote(
         uint256 epochId,
         uint256 articleId,
-        bool    voteTrue,
         bytes32 salt
     ) external {
         // Reveal allowed during Staking OR after Ended
@@ -151,32 +141,31 @@ contract Staking {
             "reveal not allowed in this phase"
         );
 
-        Commit storage c = commits[epochId][articleId][msg.sender];
+        Commit storage c = commits[epochId][msg.sender];
         require(c.rawStake  > 0,  "no commit found");
         require(!c.revealed,      "already revealed");
 
         // Core commit-reveal verification
         // If this passes, voter definitely committed this exact vote with this salt
-        bytes32 expected = keccak256(abi.encodePacked(articleId, voteTrue, salt));
-        require(expected == c.commitHash, "hash mismatch: wrong vote or salt");
+        // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
+        (, uint256 artEpochId,,,,, bool eligible) = articleRegistry.getArticle(articleId);
+        require(artEpochId == epochId, "article epoch mismatch");
+        require(eligible, "article ineligible");
+
+        bytes32 expected = keccak256(abi.encode(epochId, articleId, salt));
+        require(expected == c.commitHash, "hash mismatch");
 
         // Quadratic weighting via MathUtils.isqrt (Babylonian method)
-        // Prevents whale dominance without requiring identity verification
-        // Future extension: oracle-based sybil resistance (e.g. Worldcoin)
         uint256 effStake = MathUtils.isqrt(c.rawStake);
 
         c.revealed       = true;
-        c.voteTrue       = voteTrue;
+        c.articleId      = articleId;
         c.effectiveStake = effStake;
 
-        // Update aggregates — read by Rewards._selectTopKByEffStake for ranking
-        if (voteTrue) {
-            totalTrueEffStake[epochId][articleId]  += effStake;
-        } else {
-            totalFalseEffStake[epochId][articleId] += effStake;
-        }
+        totalEffStake[epochId][articleId] += effStake;
+        stakerList[epochId][articleId].push(msg.sender);
 
-        emit VoteRevealed(epochId, articleId, msg.sender, voteTrue, effStake);
+        emit VoteRevealed(epochId, articleId, msg.sender, effStake);
     }
 
     // ── Rewards interface ─────────────────────────────────────────────────────
@@ -190,21 +179,20 @@ contract Staking {
     /// @notice Commit fields returned individually — avoids cross-contract struct errors.
     function getCommit(
         uint256 epochId,
-        uint256 articleId,
         address voter
     ) external view returns (
         bytes32 commitHash,
         uint256 rawStake,
         bool    revealed,
-        bool    voteTrue,
+        uint256 articleId,
         uint256 effectiveStake
     ) {
-        Commit storage c = commits[epochId][articleId][voter];
+        Commit storage c = commits[epochId][voter];
         return (
             c.commitHash,
             c.rawStake,
             c.revealed,
-            c.voteTrue,
+            c.articleId,
             c.effectiveStake
         );
     }
@@ -212,20 +200,19 @@ contract Staking {
     /// @notice Quadratic-weighted vote tally for an article.
     ///         trueWeight and falseWeight are sqrt-weighted, not raw.
     function getTally(uint256 epochId, uint256 articleId)
-        external view returns (uint256 trueWeight, uint256 falseWeight)
+        external view returns (uint256 supportWeight)
     {
-        return (
-            totalTrueEffStake[epochId][articleId],
-            totalFalseEffStake[epochId][articleId]
-        );
+        return totalEffStake[epochId][articleId];
     }
 
     /// @notice Return stake to winning voter — called by Rewards at claimReader.
     function releaseStake(uint256 epochId, uint256 articleId, address to)
         external onlyRewards
     {
-        Commit storage c = commits[epochId][articleId][to];
+        Commit storage c = commits[epochId][to];
+        require(c.articleId == articleId, "voter didn't vote for this article");
         require(c.rawStake > 0, "nothing to release");
+        
         uint256 amount = c.rawStake;
         c.rawStake     = 0;
         require(token.transfer(to, amount), "transfer failed");
@@ -235,7 +222,8 @@ contract Staking {
     function slashStake(uint256 epochId, uint256 articleId, address voter)
         external onlyRewards returns (uint256 slashed)
     {
-        Commit storage c = commits[epochId][articleId][voter];
+        Commit storage c = commits[epochId][voter];
+        require(c.articleId == articleId, "voter didn't vote for this article");
         require(c.rawStake > 0, "nothing to slash");
         slashed    = c.rawStake;
         c.rawStake = 0;
