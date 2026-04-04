@@ -1,0 +1,87 @@
+{
+  "_format": "hh-sol-artifact-1",
+  "contractName": "IEpochManager",
+  "sourceName": "contracts/interfaces/IEpochManager.sol",
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "epochId",
+          "type": "uint256"
+        }
+      ],
+      "name": "currentPhase",
+      "outputs": [
+        {
+          "internalType": "enum IEpochManager.Phase",
+          "name": "",
+          "type": "uint8"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "epochId",
+          "type": "uint256"
+        }
+      ],
+      "name": "getEpoch",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "bucketId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint64",
+          "name": "submissionStart",
+          "type": "uint64"
+        },
+        {
+          "internalType": "uint64",
+          "name": "submissionEnd",
+          "type": "uint64"
+        },
+        {
+          "internalType": "uint64",
+          "name": "stakingStart",
+          "type": "uint64"
+        },
+        {
+          "internalType": "uint64",
+          "name": "stakingEnd",
+          "type": "uint64"
+        },
+        {
+          "internalType": "bool",
+          "name": "finalized",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "epochId",
+          "type": "uint256"
+        }
+      ],
+      "name": "markFinalized",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x",
+  "deployedBytecode": "0x",
+  "linkReferences": {},
+  "deployedLinkReferences": {}
+}
