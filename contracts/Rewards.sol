@@ -36,7 +36,7 @@ contract Rewards {
         bool      finalized;
         uint8     nPaid;
         uint256[] winners;    // articleIds ordered rank 1..nPaid
-        uint256   writerPool; // funded from bucket at finalize-time
+        uint256   writerPool; // funded from bucket at finalize time
         uint256   readerPool; // losing reader stakes redistributed to winners
     }
 
@@ -81,15 +81,23 @@ contract Rewards {
         uint256 eligibleCount = 0;
 
         for (uint256 i = 0; i < articleIds.length; i++) {
-            (,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
+            (,,,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
             if (el) eligibleCount++;
         }
-        require(eligibleCount > 0, "no eligible articles");
+
+        // No eligible articles, slash bucket creator stake for bad topic, then exit
+        if (eligibleCount == 0) {
+            bucketManager.slashBucketStake(bucketId);
+            epochManager.markFinalized(epochId);
+            r.finalized = true;
+            emit EpochFinalized(epochId, bucketId, 0, 0);
+            return;
+        }
 
         uint256[] memory eligible = new uint256[](eligibleCount);
         uint256 idx = 0;
         for (uint256 i = 0; i < articleIds.length; i++) {
-            (,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
+            (,,,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
             if (el) eligible[idx++] = articleIds[i];
         }
 
@@ -169,7 +177,7 @@ contract Rewards {
         require(r.finalized, "not finalized");
         require(!writerClaimed[epochId][articleId], "already claimed");
 
-        (address author, uint256 artEpochId,,,,,) = articleRegistry.getArticle(articleId);
+        (address author, uint256 artEpochId,,,,,,,) = articleRegistry.getArticle(articleId);
         require(artEpochId == epochId, "epoch mismatch");
         require(author == msg.sender, "not author");
 
@@ -206,7 +214,7 @@ contract Rewards {
             rewardShare = (userWeighted * r.readerPool) / totalWeighted;
         }
 
-        // Stake sits in Staking contract — release it directly to the voter
+        // Stake sits in Staking contract, release it directly to the voter
         (,uint256 rawStake,, uint256 articleId,) = staking.getCommit(epochId, msg.sender);
         staking.releaseStake(epochId, articleId, msg.sender);
 
@@ -249,7 +257,7 @@ contract Rewards {
             uint256 articleId = allArticles[i];
             uint256 rank = _rankOf(winners, articleId);
 
-            (address author,,,,, uint256 writerStake,) = articleRegistry.getArticle(articleId);
+            (address author,,,,,,, uint256 writerStake,) = articleRegistry.getArticle(articleId);
 
             if (writerStake == 0) continue;
 

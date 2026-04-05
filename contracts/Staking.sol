@@ -21,6 +21,11 @@ contract Staking {
         address indexed voter,
         uint256 effectiveStake
     );
+    event StakeReclaimed(
+        uint256 indexed epochId,
+        address indexed voter,
+        uint256 amount
+    );
 
     // ── Storage ───────────────────────────────────────────────────────────────
     struct Commit {
@@ -37,15 +42,15 @@ contract Staking {
     address          public immutable deployer;
     address          public rewards;
 
-    // epochId => articleId => voter => Commit
+    // epochId => voter => Commit
     mapping(uint256 => mapping(address => Commit)) public commits;
 
-    // epochId => articleId => staker addresses — iterated by Rewards at payout
+    // epochId => articleId => staker addresses, iterated by Rewards at payout
     mapping(uint256 => mapping(uint256 => address[]))                  internal stakerList;
-    // one commit per voter per epoch/article — tracks whether voter has already voted
+    // one commit per voter per epoch, tracks whether voter has already committed
     mapping(uint256 => mapping(address => bool)) internal hasCommitted;
 
-    // quadratic-weighted vote totals — read by Rewards for ranking
+    // quadratic-weighted vote totals, read by Rewards for ranking
     mapping(uint256 => mapping(uint256 => uint256)) public totalEffStake;
 
     // ── Constructor ───────────────────────────────────────────────────────────
@@ -77,12 +82,12 @@ contract Staking {
     // ── Phase 1: commit ───────────────────────────────────────────────────────
     /// @notice Lock tokens and submit a blinded vote commitment.
     /// @dev commitHash = keccak256(abi.encode(epochId, articleId, salt))
-    ///      Vote is invisible until reveal — prevents last-minute bandwagoning.
+    ///      Vote is invisible until reveal, preventing last-minute bandwagoning.
     ///      Quadratic weighting (sqrt) is applied at reveal, not here.
-    ///      One commit per voter per article — no topping up after committing.
+    ///      One commit per voter per epoch, no topping up after committing.
     /// @param epochId    Epoch this vote belongs to.
-    /// @param commitHash Blinded commitment — keccak256(abi.encode(epochId, articleId, salt)).
-    /// @param rawStake   Tokens to lock — sqrt applied at reveal for effective weight.
+    /// @param commitHash Blinded commitment, keccak256(abi.encode(epochId, articleId, salt)).
+    /// @param rawStake   Tokens to lock, sqrt applied at reveal for effective weight.
     function commitVote(
         uint256 epochId,
         bytes32 commitHash,
@@ -120,9 +125,9 @@ contract Staking {
 
     // ── Phase 2: reveal ───────────────────────────────────────────────────────
     /// @notice Reveal committed vote by submitting plaintext vote + salt.
-    /// @dev Recomputes keccak256(articleId, voteTrue, salt) and verifies it
-    ///      matches the stored commitHash. Wrong vote or wrong salt both revert.
-    ///      effectiveStake = sqrt(rawStake) — quadratic weighting applied here.
+    /// @dev Recomputes keccak256(abi.encode(epochId, articleId, salt)) and verifies it
+    ///      matches the stored commitHash. Wrong articleId or wrong salt both revert.
+    ///      effectiveStake = sqrt(rawStake), quadratic weighting applied here.
     ///      A whale with 10000 tokens gets sqrt(10000)=100 weight, not 10000.
     /// @param epochId   Epoch this vote belongs to.
     /// @param articleId Article being voted on.
@@ -132,13 +137,11 @@ contract Staking {
         uint256 articleId,
         bytes32 salt
     ) external {
-        // Reveal allowed during Staking OR after Ended
-        // If reveal-only-during-staking: voter who misses window loses stake unfairly
+        // Reveal only allowed after epoch ends — prevents bandwagoning on early reveals
         IEpochManager.Phase phase = epochManager.currentPhase(epochId);
         require(
-            phase == IEpochManager.Phase.Staking ||
             phase == IEpochManager.Phase.Ended,
-            "reveal not allowed in this phase"
+            "reveal not allowed until epoch ends"
         );
 
         Commit storage c = commits[epochId][msg.sender];
@@ -147,8 +150,8 @@ contract Staking {
 
         // Core commit-reveal verification
         // If this passes, voter definitely committed this exact vote with this salt
-        // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
-        (, uint256 artEpochId,,,,, bool eligible) = articleRegistry.getArticle(articleId);
+        // 9 fields: author, epochId, bucketId, contentCID, contentHash, manifestCID, manifestHash, writerStake, eligible
+        (, uint256 artEpochId,,,,,, bool eligible) = articleRegistry.getArticle(articleId);
         require(artEpochId == epochId, "article epoch mismatch");
         require(eligible, "article ineligible");
 
@@ -203,6 +206,24 @@ contract Staking {
         external view returns (uint256 supportWeight)
     {
         return totalEffStake[epochId][articleId];
+    }
+
+    /// @notice Reclaim stake for voters who committed but never revealed.
+    ///         Only callable after the epoch is finalized — prevents gaming
+    ///         (voter can't reclaim mid-epoch to avoid being slashed as a loser).
+    function reclaimStake(uint256 epochId) external {
+        (,,,,,  bool finalized) = epochManager.getEpoch(epochId);
+        require(finalized, "epoch not finalized");
+
+        Commit storage c = commits[epochId][msg.sender];
+        require(c.rawStake  > 0,  "nothing to reclaim");
+        require(!c.revealed,      "already revealed, use claimReader");
+
+        uint256 amount = c.rawStake;
+        c.rawStake     = 0;
+        require(token.transfer(msg.sender, amount), "transfer failed");
+
+        emit StakeReclaimed(epochId, msg.sender, amount);
     }
 
     /// @notice Return stake to winning voter — called by Rewards at claimReader.
