@@ -147,7 +147,6 @@ contract Staking {
 
         // Core commit-reveal verification
         // If this passes, voter definitely committed this exact vote with this salt
-        // 7 fields: author, epochId, bucketId, contentCID, contentHash, writerStake, eligible
         (, uint256 artEpochId,,,,, bool eligible) = articleRegistry.getArticle(articleId);
         require(artEpochId == epochId, "article epoch mismatch");
         require(eligible, "article ineligible");
