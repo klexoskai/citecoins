@@ -45,13 +45,4 @@ contract CitecoinToken is ERC20 {
         _mint(to, amount);
     }
 
-    // ── Burning ───────────────────────────────────────────────────────────────
-    /// @notice Burn tokens from an address.
-    ///         Called by BucketManager when slashing creator stake.
-    ///         Uses onlyMinter so Rewards can slash without user pre-approval.
-    function burn(address from, uint256 amount) external onlyMinter {
-        require(from != address(0), "zero address");
-        require(amount > 0,         "zero amount");
-        _burn(from, amount);
-    }
 }

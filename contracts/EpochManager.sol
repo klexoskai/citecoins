@@ -114,6 +114,7 @@ contract EpochManager {
 
         if (t <  e.submissionStart) return Phase.NotStarted;
         if (t <= e.submissionEnd)   return Phase.Submission;
+        if (t <  e.stakingStart)    return Phase.NotStarted;
         if (t <= e.stakingEnd)      return Phase.Staking;
         return Phase.Ended;
     }
