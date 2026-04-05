@@ -24,7 +24,7 @@ contract Staking {
 
     // ── Storage ───────────────────────────────────────────────────────────────
     struct Commit {
-        bytes32 commitHash;     // keccak256(abi.encodePacked(articleId, voteTrue, salt))
+        bytes32 commitHash;     // keccak256(abi.encode(epochId, articleId, salt))
         uint256 rawStake;       // tokens locked at commit time
         bool    revealed;
         uint256 articleId;      // only set at reveal 
@@ -76,12 +76,12 @@ contract Staking {
 
     // ── Phase 1: commit ───────────────────────────────────────────────────────
     /// @notice Lock tokens and submit a blinded vote commitment.
-    /// @dev commitHash = keccak256(abi.encodePacked(articleId, voteTrue, salt))
+    /// @dev commitHash = keccak256(abi.encode(epochId, articleId, salt))
     ///      Vote is invisible until reveal — prevents last-minute bandwagoning.
     ///      Quadratic weighting (sqrt) is applied at reveal, not here.
     ///      One commit per voter per article — no topping up after committing.
     /// @param epochId    Epoch this vote belongs to.
-    /// @param commitHash Blinded commitment — keccak256(articleId, voteTrue, salt).
+    /// @param commitHash Blinded commitment — keccak256(abi.encode(epochId, articleId, salt)).
     /// @param rawStake   Tokens to lock — sqrt applied at reveal for effective weight.
     function commitVote(
         uint256 epochId,

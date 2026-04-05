@@ -15,10 +15,12 @@ library MathUtils {
         }
     }
 
-    /// @notice Clamp winners count: nPaid = min(clamp(A,3,10), A)
+    /// @notice Paid positions = clamp(floor(A/2), 3, 10), capped at A.
+    ///         Top half wins; min 3 prevents tiny-pool farming; max 10 caps tail.
+    ///         Requires A >= 4 for any losers to exist.
     function winnersCount(uint256 A) internal pure returns (uint8) {
         if (A == 0) return 0;
-        uint256 n = A;
+        uint256 n = A / 2;
         if (n < 3) n = 3;
         if (n > 10) n = 10;
         if (n > A) n = A;

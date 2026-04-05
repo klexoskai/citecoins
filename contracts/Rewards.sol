@@ -207,14 +207,16 @@ contract Rewards {
             rewardShare = (userWeighted * r.readerPool) / totalWeighted;
         }
 
-        uint256 stakeBack = _getUserRawWinningStake(epochId, r.winners, msg.sender);
-        uint256 payout = stakeBack + rewardShare;
+        // Stake sits in Staking contract — release it directly to the voter
+        (,uint256 rawStake,, uint256 articleId,) = staking.getCommit(epochId, msg.sender);
+        staking.releaseStake(epochId, articleId, msg.sender);
 
-        if (payout > 0) {
-            require(token.transfer(msg.sender, payout), "transfer failed");
+        // Only the rewardShare portion comes from Rewards
+        if (rewardShare > 0) {
+            require(token.transfer(msg.sender, rewardShare), "transfer failed");
         }
 
-        emit ReaderClaimed(epochId, msg.sender, payout);
+        emit ReaderClaimed(epochId, msg.sender, rawStake + rewardShare);
     }
 
     // ── Internal: finalization helpers ───────────────────────────────────────
@@ -280,32 +282,14 @@ contract Rewards {
         address[] memory stakers = staking.getStakers(epochId, articleId);
 
         for (uint256 j = 0; j < stakers.length; j++) {
-            (, uint256 rawStake, bool revealed, uint256 committedArticleId,) =
+            (, , bool revealed, uint256 committedArticleId, uint256 effectiveStake) =
                 staking.getCommit(epochId, stakers[j]);
 
             if (!revealed) continue;
             if (committedArticleId != articleId) continue;
 
-            totalWeighted += rawStake;
-            if (stakers[j] == user) userWeighted += rawStake;
-        }
-    }
-
-    function _getUserRawWinningStake(
-        uint256          epochId,
-        uint256[] memory winners,
-        address          user
-    ) internal view returns (uint256 total) {
-        (, uint256 rawStake, bool revealed, uint256 articleId,) =
-            staking.getCommit(epochId, user);
-
-        if (!revealed) return 0;
-
-        for (uint256 i = 0; i < winners.length; i++) {
-            if (winners[i] == articleId) {
-                total += rawStake;
-                break;
-            }
+            totalWeighted += effectiveStake;
+            if (stakers[j] == user) userWeighted += effectiveStake;
         }
     }
 
