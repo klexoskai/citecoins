@@ -270,8 +270,8 @@
       ]
     },
     "/Users/calista/Documents/GitHub/citecoins/contracts/Staking.sol": {
-      "lastModificationDate": 1775315659360,
-      "contentHash": "8c581449f4734951dbce01fd56f798ce",
+      "lastModificationDate": 1775319850434,
+      "contentHash": "0b9d01299737be24d2b432c3ba36bbbb",
       "sourceName": "contracts/Staking.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -311,8 +311,8 @@
       ]
     },
     "/Users/calista/Documents/GitHub/citecoins/contracts/Rewards.sol": {
-      "lastModificationDate": 1775316757543,
-      "contentHash": "3face6022d486e7e7a22681f00232a4c",
+      "lastModificationDate": 1775321669743,
+      "contentHash": "60cb63c2fcdbfdae2ddcf33f26dd0d38",
       "sourceName": "contracts/Rewards.sol",
       "solcConfig": {
         "version": "0.8.20",
