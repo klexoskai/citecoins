@@ -6,11 +6,11 @@ import "./interfaces/IBucketManager.sol";
 import "./interfaces/IEpochManager.sol";
 import "./interfaces/IArticleRegistry.sol";
 import "./interfaces/IStaking.sol";
+import "./interfaces/IReputationManager.sol";
 import "./libraries/MathUtils.sol";
 
 contract Rewards {
 
-    // ── Events ────────────────────────────────────────────────────────────────
     event EpochFinalized(
         uint256 indexed epochId,
         uint256 indexed bucketId,
@@ -31,41 +31,41 @@ contract Rewards {
         uint256 amount
     );
 
-    // ── Storage ───────────────────────────────────────────────────────────────
     struct EpochResult {
         bool      finalized;
         uint8     nPaid;
         uint256[] winners;    // articleIds ordered rank 1..nPaid
-        uint256   writerPool; // funded from bucket at finalize time
+        uint256   writerPool;
         uint256   readerPool; // losing reader stakes redistributed to winners
     }
 
-    ICitecoinToken   public immutable token;
-    IBucketManager   public immutable bucketManager;
-    IEpochManager    public immutable epochManager;
-    IArticleRegistry public immutable articleRegistry;
-    IStaking         public immutable staking;
+    ICitecoinToken     public immutable token;
+    IBucketManager     public immutable bucketManager;
+    IEpochManager      public immutable epochManager;
+    IArticleRegistry   public immutable articleRegistry;
+    IStaking           public immutable staking;
+    IReputationManager public immutable reputationManager;
 
     mapping(uint256 => EpochResult)              public results;
     mapping(uint256 => mapping(uint256 => bool)) public writerClaimed;
     mapping(uint256 => mapping(address => bool)) public readerClaimed;
 
-    // ── Constructor ───────────────────────────────────────────────────────────
     constructor(
         address tokenAddress,
         address bucketManagerAddress,
         address epochManagerAddress,
         address articleRegistryAddress,
-        address stakingAddress
+        address stakingAddress,
+        address reputationManagerAddress
     ) {
-        token           = ICitecoinToken(tokenAddress);
-        bucketManager   = IBucketManager(bucketManagerAddress);
-        epochManager    = IEpochManager(epochManagerAddress);
-        articleRegistry = IArticleRegistry(articleRegistryAddress);
-        staking         = IStaking(stakingAddress);
+        token              = ICitecoinToken(tokenAddress);
+        bucketManager      = IBucketManager(bucketManagerAddress);
+        epochManager       = IEpochManager(epochManagerAddress);
+        articleRegistry    = IArticleRegistry(articleRegistryAddress);
+        staking            = IStaking(stakingAddress);
+        reputationManager  = IReputationManager(reputationManagerAddress);
     }
 
-    // ── Finalization ──────────────────────────────────────────────────────────
     function finalizeEpoch(uint256 epochId, uint256 writerPoolAmount) external {
         EpochResult storage r = results[epochId];
         require(!r.finalized, "already finalized");
@@ -76,22 +76,12 @@ contract Rewards {
 
         (uint256 bucketId,,,,,) = epochManager.getEpoch(epochId);
 
-        // Step 1: collect eligible articles
         uint256[] memory articleIds = articleRegistry.getEpochArticles(epochId);
         uint256 eligibleCount = 0;
 
         for (uint256 i = 0; i < articleIds.length; i++) {
             (,,,,,,,, bool el) = articleRegistry.getArticle(articleIds[i]);
             if (el) eligibleCount++;
-        }
-
-        // No eligible articles, slash bucket creator stake for bad topic, then exit
-        if (eligibleCount == 0) {
-            bucketManager.slashBucketStake(bucketId);
-            epochManager.markFinalized(epochId);
-            r.finalized = true;
-            emit EpochFinalized(epochId, bucketId, 0, 0);
-            return;
         }
 
         uint256[] memory eligible = new uint256[](eligibleCount);
@@ -101,16 +91,42 @@ contract Rewards {
             if (el) eligible[idx++] = articleIds[i];
         }
 
-        // Step 2: rank top-n by support only
-        uint8 nPaid = MathUtils.winnersCount(eligibleCount);
+        // Articles with no reveals: return writer stake (writer isn't at fault), exclude from winner selection.
+        uint256 supportedCount = 0;
+        for (uint256 i = 0; i < eligibleCount; i++) {
+            if (staking.getStakers(epochId, eligible[i]).length > 0) {
+                supportedCount++;
+            } else {
+                (address author,,,,,,, uint256 writerStake,) = articleRegistry.getArticle(eligible[i]);
+                if (writerStake > 0) articleRegistry.releaseStake(eligible[i], author);
+            }
+        }
+
+        uint256[] memory supported = new uint256[](supportedCount);
+        idx = 0;
+        for (uint256 i = 0; i < eligibleCount; i++) {
+            if (staking.getStakers(epochId, eligible[i]).length > 0) {
+                supported[idx++] = eligible[i];
+            }
+        }
+
+        // Fewer than 2 supported articles = bad topic; slash bucket creator stake and exit.
+        if (supportedCount < 2) {
+            bucketManager.slashBucketStake(bucketId);
+            epochManager.markFinalized(epochId);
+            r.finalized = true;
+            emit EpochFinalized(epochId, bucketId, 0, 0);
+            return;
+        }
+
+        uint8 nPaid = MathUtils.winnersCount(supportedCount);
         uint256[] memory winners = _selectTopKByEffStake(
             epochId,
-            eligible,
-            eligibleCount,
+            supported,
+            supportedCount,
             nPaid
         );
 
-        // Steps 3-7
         uint256 readerPool = _finalizeInner(
             epochId,
             bucketId,
@@ -119,10 +135,11 @@ contract Rewards {
             writerPoolAmount
         );
 
-        // Step 8: mark finalized
+        // Only iterates stakerList (revealed voters) — unrevealed commits are unaffected.
+        _updateReputations(epochId, articleIds, winners);
+
         epochManager.markFinalized(epochId);
 
-        // Step 9: store results
         r.finalized  = true;
         r.nPaid      = nPaid;
         r.winners    = winners;
@@ -139,7 +156,6 @@ contract Rewards {
         uint256[] memory winners,
         uint256          writerPoolAmount
     ) internal returns (uint256 readerPool) {
-        // Step 3: compute pools
         uint256 S_win = 0;
         for (uint256 i = 0; i < winners.length; i++) {
             S_win += _rawStakeOnArticle(epochId, winners[i]);
@@ -155,23 +171,16 @@ contract Rewards {
         uint256 feeTaken = (S_lose * bucketManager.FEE_BPS()) / 10_000;
         readerPool = S_lose - feeTaken;
 
-        // Step 4: slash losing readers
         _slashLosers(epochId, articleIds, winners);
+        _settleWriterStakes(articleIds, winners, uint8(winners.length));
 
-        // Step 5: settle writer stakes
-        uint8 nPaid = uint8(winners.length);
-        _settleWriterStakes(articleIds, winners, nPaid);
-
-        // Step 6: pull writer pool from bucket
         if (writerPoolAmount > 0) {
             bucketManager.withdrawBucketFunds(bucketId, address(this), writerPoolAmount);
         }
 
-        // Step 7: deactivate bucket
         bucketManager.deactivateBucket(bucketId);
     }
 
-    // ── Writer claim ──────────────────────────────────────────────────────────
     function claimWriter(uint256 epochId, uint256 articleId) external {
         EpochResult storage r = results[epochId];
         require(r.finalized, "not finalized");
@@ -193,7 +202,6 @@ contract Rewards {
         emit WriterClaimed(epochId, articleId, msg.sender, payout);
     }
 
-    // ── Reader claim ──────────────────────────────────────────────────────────
     function claimReader(uint256 epochId) external {
         EpochResult storage r = results[epochId];
 
@@ -215,11 +223,9 @@ contract Rewards {
             rewardShare = (userWeighted * r.readerPool) / totalWeighted;
         }
 
-        // Stake sits in Staking contract, release it directly to the voter
         (,uint256 rawStake,, uint256 articleId,) = staking.getCommit(epochId, msg.sender);
         staking.releaseStake(epochId, articleId, msg.sender);
 
-        // Only the rewardShare portion comes from Rewards
         if (rewardShare > 0) {
             require(token.transfer(msg.sender, rewardShare), "transfer failed");
         }
@@ -227,7 +233,20 @@ contract Rewards {
         emit ReaderClaimed(epochId, msg.sender, rawStake + rewardShare);
     }
 
-    // ── Internal: finalization helpers ───────────────────────────────────────
+    function _updateReputations(
+        uint256          epochId,
+        uint256[] memory articleIds,
+        uint256[] memory winners
+    ) internal {
+        for (uint256 i = 0; i < articleIds.length; i++) {
+            bool isWinner = _rankOf(winners, articleIds[i]) != 0;
+            address[] memory stakers = staking.getStakers(epochId, articleIds[i]);
+            for (uint256 j = 0; j < stakers.length; j++) {
+                reputationManager.updateRep(stakers[j], isWinner);
+            }
+        }
+    }
+
     function _slashLosers(
         uint256          epochId,
         uint256[] memory allArticles,
@@ -315,7 +334,6 @@ contract Rewards {
         }
     }
 
-    // ── Internal: math ────────────────────────────────────────────────────────
     function _rankOf(uint256[] memory winners, uint256 articleId)
         internal pure returns (uint256)
     {

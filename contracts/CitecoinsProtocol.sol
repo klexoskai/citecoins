@@ -7,35 +7,40 @@ import "./EpochManager.sol";
 import "./ArticleRegistry.sol";
 import "./Staking.sol";
 import "./Rewards.sol";
+import "./ReputationManager.sol";
 
 contract CitecoinsProtocol {
-    CitecoinToken   public token;
-    BucketManager   public buckets;
-    EpochManager    public epochs;
-    ArticleRegistry public articles;
-    Staking         public staking;
-    Rewards         public rewards;
+    CitecoinToken      public token;
+    BucketManager      public buckets;
+    EpochManager       public epochs;
+    ArticleRegistry    public articles;
+    Staking            public staking;
+    Rewards            public rewards;
+    ReputationManager  public repManager;
 
     constructor(uint256 initialSupply) {
-        token = new CitecoinToken(msg.sender, initialSupply);
+        token      = new CitecoinToken(msg.sender, initialSupply);
+        repManager = new ReputationManager();
 
         buckets = new BucketManager(address(token));
         epochs  = new EpochManager(address(buckets));
 
         articles = new ArticleRegistry(address(epochs), address(token));
-        staking  = new Staking(address(token), address(epochs), address(articles));
+        staking  = new Staking(address(token), address(epochs), address(articles), address(repManager));
         rewards  = new Rewards(
             address(token),
             address(buckets),
             address(epochs),
             address(articles),
-            address(staking)
+            address(staking),
+            address(repManager)
         );
 
         buckets.setRewards(address(rewards));
         epochs.setRewards(address(rewards));
         articles.setRewards(address(rewards));
         staking.setRewards(address(rewards));
+        repManager.setRewards(address(rewards));
         token.grantMinter(address(rewards));
     }
 }

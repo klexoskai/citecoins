@@ -256,15 +256,16 @@ Constraints:
 
 Finalize algorithm:
 1. Collect eligible articles from `ArticleRegistry`
-2. If no eligible articles: slash bucket creator stake, mark finalized, exit
-3. Compute `nPaid = winnersCount(eligibleCount)`
-4. Select top `nPaid` by `effectiveStake` (insertion sort, tie-break: raw stake desc, articleId asc)
-5. Compute `S_lose` and `readerPool = S_lose - fee`
-6. Slash losing reader stakes → transferred to `Rewards`
-7. Settle writer stakes (release winners, slash losers)
-8. Pull `writerPoolAmount` from bucket into `Rewards`
-9. Deactivate bucket (releases creator stake)
-10. Mark epoch finalized; store `EpochResult`
+2. Filter eligible articles by ≥1 reader reveal — articles with 0 reveals have writer stake returned (not slashed) and are excluded from competition
+3. If fewer than 2 articles have reader support: slash bucket creator stake, mark finalized, exit
+4. Compute `nPaid = winnersCount(supportedCount)`
+5. Select top `nPaid` by `effectiveStake` from supported articles (insertion sort, tie-break: raw stake desc, articleId asc)
+6. Compute `S_lose` and `readerPool = S_lose - fee`
+7. Slash losing reader stakes → transferred to `Rewards`
+8. Settle writer stakes (release winners, slash losers; 0-reveal articles already settled in step 2)
+9. Pull `writerPoolAmount` from bucket into `Rewards`
+10. Deactivate bucket (releases creator stake)
+11. Mark epoch finalized; store `EpochResult`
 
 ### 4.6 Claiming rewards
 
