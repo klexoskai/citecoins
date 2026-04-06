@@ -1,226 +1,144 @@
 # Citecoins — Evidence-Backed Reporting + Market Staking (L2 / Solidity)
 
-Citecoins is a blockchain-based publishing and incentive system that rewards **evidence-backed reporting**. Writers publish articles with attached evidence (videos/images/source documents). Readers stake **Citecoins** on articles they believe are most credible and well substantiated. After a defined staking window, the protocol uses a **pure market signal** (stake-weighted ranking) to determine “top” articles and distribute rewards.
+Citecoins is a blockchain-based publishing and incentive system that rewards **evidence-backed reporting**. Writers publish articles with attached evidence manifests (videos, images, source documents anchored on-chain). Readers stake **CITE tokens** on articles they believe are most credible. After a defined staking window, the protocol uses a **commit-reveal market signal** (quadratic-stake-weighted ranking) to determine top articles and distribute rewards.
 
-This repository is a **monorepo** containing:
-- Solidity smart contracts (L2-targeted)
-- an indexer (Subgraph or custom)
-- a web app for publishing/reading/staking
-- shared TypeScript SDK/types
-
-> v1 explicitly uses **market staking only** for outcomes (no dispute resolution, no oracle-based truth). That keeps scope tight but requires strong anti-spam/anti-sybil considerations.
+> v1 uses **market staking only** for outcomes — no dispute resolution, no oracle-based truth. Rankings reflect market consensus, not factual verification.
 
 ---
 
-## Why a Monorepo (Recommended for v1)
+## Repository Structure
 
-Monorepo advantages for this project:
-- Single source of truth for **ABIs**, event schemas, and contract addresses.
-- Easier CI: contract tests + app builds in one pipeline.
-- Shared packages (types/SDK) reduce integration bugs.
+```
+contracts/
+  CitecoinToken.sol       — ERC-20 CITE token
+  BucketManager.sol       — topic buckets and reward pools
+  EpochManager.sol        — time windows and phase gating
+  ArticleRegistry.sol     — article submission and writer stakes
+  Staking.sol             — commit-reveal voting and reader stakes
+  Rewards.sol             — finalization and reward distribution
+  CitecoinsProtocol.sol   — deploys and wires all contracts
 
-You can split into multiple repos later (e.g., `citecoins-contracts`, `citecoins-app`) once interfaces are stable.
+  interfaces/             — IBucketManager, IEpochManager, IArticleRegistry,
+                            IStaking, ICitecoinToken
+  libraries/
+    MathUtils.sol         — isqrt (Babylonian), winnersCount
+
+docs/
+  architecture.md         — on-chain component design and data flow
+  contract-spec.md        — function signatures, structs, invariants
+  tokenomics.md           — incentive design and reward math
+  threat-model.md         — attack vectors and mitigations
+
+test/
+  CitecoinToken.js
+  BucketManager.js
+  EpochManager.js
+  ArticleRegistry.js
+  Staking.js
+  Rewards.js
+  CiteCoinsFlow.js        — end-to-end happy path
+
+scripts/
+  deploy.js               — deploy CitecoinsProtocol and print addresses
+  demoFlow.js             — scripted demo of the full flow
+
+generate/
+  generate.mjs            — helper to compute commit hashes for manual testing
+```
 
 ---
 
 ## Core Concepts
 
 ### Actors
-- **Writers / Publishers**
-  - Publish articles and evidence manifests.
-  - Earn rewards if their articles end a round in the “top” set.
-- **Readers / Stakers**
-  - Stake Citecoins on articles they believe are best evidenced.
-  - Earn rewards when staking aligns with final top-ranked set.
-- **Funders**
-  - Create **Fund Buckets** to incentivize reporting on topics/regions.
-  - Provide budgets to amplify rewards for eligible articles.
+- **Writers**: Publish articles + evidence manifests. Stake CITE to enter. Earn ranked rewards if their article wins.
+- **Readers / Voters**: Commit blinded votes (with staked CITE) on articles they believe will rank highest. Earn a share of losing stakes if they back a winner.
+- **Funders**: Create topic buckets and deposit reward pools for writers.
 
 ### Objects
-- **Article**
-  - On-chain record pointing to off-chain content + evidence manifest.
-- **Evidence Manifest**
-  - A structured JSON document listing evidence items with cryptographic hashes.
-- **Fund Bucket**
-  - A pool of rewards with eligibility rules (tags, time window, etc.).
+- **Bucket**: A topic-specific reward pool. Creator stakes CITE to create; slashed if no articles pass.
+- **Epoch**: A time window for a bucket — Submission phase → Staking phase → Ended → Finalized.
+- **Article**: On-chain record pointing to off-chain content (`contentCID`) and evidence manifest (`manifestCID`). Hashes stored on-chain for tamper evidence.
+- **Commit**: A blinded vote. Revealed only after epoch ends.
 
 ---
 
-## High-Level Architecture
+## On-Chain Architecture
 
-### On-chain (Solidity, L2)
-**Contracts**
-1. `CitecoinToken` (ERC-20)
-   - The staking/reward token.
+### Contracts
 
-2. `ArticleRegistry`
-   - Registers articles and immutable references:
-     - `contentCID` (article body stored off-chain)
-     - `evidenceManifestCID`
-     - `contentHash` / `manifestHash` (optional but recommended even with CID)
-     - tags / topic IDs
-     - author address
-     - optional `fundBucketId`
+1. **`CitecoinToken`** — Standard ERC-20. Minting restricted to `Rewards` (minter role).
 
-3. `StakingRounds` (or `StakingMarket`)
-   - Defines staking windows (“rounds”)
-   - Accepts stakes for (roundId, articleId)
-   - Tracks total stake per article per round
-   - Enforces:
-     - staking start/end timestamps
-     - minimum stake
-     - optional publish fee / anti-spam fee
+2. **`BucketManager`** — Funders create topic buckets by staking `≥ 100 CITE`. Anyone can fund a bucket's reward pool. Creator stake is slashed if the epoch ends with no eligible articles; released on successful finalization.
 
-4. `RewardsDistributor`
-   - At round end:
-     - determines winners by stake ranking (e.g., top N or top X% by stake)
-     - computes payouts to:
-       - writers (creator rewards)
-       - winning stakers (pro-rata)
-       - fund bucket (optional remainder) or protocol treasury
+3. **`EpochManager`** — Creates time-windowed epochs for a bucket. Single source of truth for phase gating. Phases: `NotStarted → Submission → Staking → Ended`.
 
-5. `FundBuckets`
-   - Funders create buckets with:
-     - metadata (topic, region, description)
-     - eligibility rules (tags, created_at bounds, etc.)
-     - reward budget
-     - reward boost parameters (e.g., multiplier or dedicated payout slice)
+4. **`ArticleRegistry`** — Writers publish during Submission phase. Requires `≥ 10 CITE` writer stake and a non-empty evidence manifest. Writer stake is released to winners and slashed from losers at finalization.
 
-**Outcome Rule (v1)**
-- “Ground truth” is approximated by **market consensus**:
-  - After the staking window closes, the protocol selects “top articles” purely by stake totals (or stake-weighted score).
+5. **`Staking`** — Commit-reveal voting system:
+   - **Commit** (Staking phase): lock CITE, submit `keccak256(abi.encode(epochId, articleId, salt))`
+   - **Reveal** (after Phase.Ended only): submit plaintext vote; `effectiveStake = sqrt(rawStake)` applied for quadratic ranking
+   - Winning voter stakes returned at claim; losing voter stakes slashed at finalization
 
-> Note: this is not factual verification; it’s an incentive/ranking mechanism. The README and UI should be explicit about that to avoid misleading users.
+6. **`Rewards`** — Permissionless `finalizeEpoch(epochId, writerPoolAmount)` callable after epoch ends. Ranks articles by quadratic effective stake, selects top `nPaid = clamp(floor(A/2), 3, 10)` winners. Pull-based claims:
+   - `claimWriter(epochId, articleId)` — rank-based exponential decay payout from bucket pool
+   - `claimReader(epochId)` — principal + effectiveStake-proportional share of losing stakes
+
+7. **`CitecoinsProtocol`** — Factory that deploys all contracts and wires permissions in one transaction.
+
+### Quadratic ranking
+- Influence = `sqrt(rawStake)` per voter, summed per article
+- Ranking uses effective (quadratic) stake; a whale with 10,000 CITE gets sqrt(10,000) = 100 weight
+
+### Anti-bandwagon
+- Commit-reveal: votes invisible until epoch ends — no last-minute pile-in
 
 ---
 
-### Off-chain
-1. **Storage**
-   - Article content + evidence stored off-chain (recommended: IPFS + pinning, or Arweave).
-   - The chain stores CIDs/hashes so content is tamper-evident.
+## Quick Start
 
-2. **Indexer**
-   - Subgraph (The Graph) or custom indexer that aggregates:
-     - articles
-     - stakes per round
-     - fund buckets + budgets
-     - round finalization + payouts
-   - Powers queries like:
-     - “Top articles this week in topic X”
-     - “My staking positions”
-     - “Writer earnings over time”
-
-3. **Web App**
-   - Publish article + upload evidence manifest
-   - Browse/filter articles by topic/region/time
-   - Stake on articles
-   - View round outcomes and payouts
+```bash
+npm install
+npx hardhat test
+npx hardhat run scripts/deploy.js --network <network>
+```
 
 ---
 
-## Suggested Repo Structure (Monorepo)
+## Demo Flow
 
-A pragmatic layout using pnpm workspaces (or yarn/npm workspaces):
+1. Deploy `CitecoinsProtocol(initialSupply)`
+2. Approve + `BucketManager.createBucket(topicURI, 100e18)`
+3. `BucketManager.fundBucket(bucketId, amount)`
+4. `EpochManager.createEpoch(bucketId, submissionStart, submissionEnd, stakingStart, stakingEnd)`
+5. Writers: approve + `ArticleRegistry.publishArticle(epochId, contentCID, contentHash, manifestCID, manifestHash, writerStake)`
+6. Readers: approve + `Staking.commitVote(epochId, keccak256(abi.encode(epochId, articleId, salt)), rawStake)`
+7. After epoch ends: `Staking.revealVote(epochId, articleId, salt)`
+8. `Rewards.finalizeEpoch(epochId, writerPoolAmount)`
+9. Authors: `Rewards.claimWriter(epochId, articleId)` | Readers: `Rewards.claimReader(epochId)`
 
-- `contracts/`
-  - Solidity contracts (Foundry or Hardhat)
-  - deployment scripts
-  - contract tests
-  - generated ABIs/artifacts export step
-
-- `apps/`
-  - `web/` (Next.js)
-    - reader/writer UI
-    - wallet connect + staking flows
-    - evidence viewer (CID fetch + hash display)
-
-- `packages/`
-  - `sdk/`
-    - TypeScript SDK for:
-      - contract reads/writes
-      - typed events
-      - convenience functions (stake, publish, finalize)
-  - `types/`
-    - shared TypeScript types (Article, EvidenceManifest, FundBucket, Round)
-  - `ui/` (optional)
-    - shared UI components
-
-- `indexer/`
-  - `subgraph/` (if using The Graph)
-  - or `worker/` (custom indexer consuming RPC logs)
-
-- `docs/`
-  - `architecture.md` (more detailed spec)
-  - `tokenomics.md`
-  - `threat-model.md`
-
-- `.github/workflows/`
-  - CI: lint + test contracts + build web + typecheck
+Use `generate/generate.mjs` to pre-compute commit hashes for manual Remix testing.
 
 ---
 
-## Evidence Manifest (Recommended Format)
+## Evidence Manifest Format
 
-Store a JSON manifest off-chain and anchor its CID/hash on-chain.
+Stored off-chain (IPFS), anchored on-chain via `manifestCID` + `manifestHash`.
 
 Minimal fields:
-- `articleId` (or temporary client-side ID before publish)
-- `createdAt`
-- `items[]` where each item has:
-  - `type` (image/video/document/link)
-  - `cid` or URL
-  - `sha256` (or multihash)
-  - `description`
-  - optional: `timestamp`, `location`, `source`
-
-This keeps on-chain storage small while preserving integrity.
-
----
-
-## “Market Staking Only” Considerations (Important)
-
-Because v1 has no disputes, you should plan mitigations for:
-- **spam publishing** → publish fees, minimum reputation gates (later), or rate limits
-- **sybil accounts** → optional identity integrations later; for v1 consider:
-  - minimum stake thresholds
-  - quadratic-ish weighting caps (optional, but changes economics)
-- **whale domination** → consider per-round maximum stake per wallet, or diminishing returns (careful: adds complexity)
-- **brigading** → topic-specific rounds, bucket-specific rounds, or stake caps
-
-For v1, keep it simple:
-- publish fee (small)
-- minimum stake
-- clear disclaimers in UI about “market consensus ranking”
-
----
-
-## Initial Milestones
-
-### Milestone 1 — MVP (Market Ranking)
-- ERC-20 token
-- article registry w/ CID pointers
-- staking rounds + stake tracking
-- finalize round → top N winners → distribute rewards
-- basic web UI
-
-### Milestone 2 — Fund Buckets
-- create/fund bucket
-- bucket eligibility and boosted payouts
-- funder dashboard
-
-### Milestone 3 — Scaling + UX
-- indexer/subgraph
-- discovery feeds, filters, writer profiles
-- better evidence viewer + integrity display
-
----
-
-## Tech Choices (Proposed Defaults)
-
-- Contracts: **Foundry** (fast tests) or Hardhat (wider plugins)
-- Web: **Next.js + wagmi + viem**
-- Indexing: **The Graph** (simplest) or a custom worker
-- Storage: **IPFS + pinning service** (and later Arweave for permanence)
+```json
+{
+  "createdAt": "...",
+  "items": [
+    {
+      "type": "image|video|document|link",
+      "cid": "ipfs://...",
+      "sha256": "0x...",
+      "description": "..."
+    }
+  ]
+}
+```
 
 ---
 
