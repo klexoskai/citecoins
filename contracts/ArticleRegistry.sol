@@ -20,12 +20,10 @@ contract ArticleRegistry {
         address author;
         uint256 bucketId;
         uint256 epochId;
-        string  contentCID;   // IPFS CID of article body
-        bytes32 contentHash;  // keccak256 of content, proves no retroactive edits
-        string  manifestCID;  // IPFS CID of evidence manifest (sources, media, citations)
-        bytes32 manifestHash; // keccak256 of manifest, proves no retroactive edits
-        uint256 writerStake;  // tokens locked, slashed by Rewards if ranked out
-        bool    eligible;     // false = excluded from reward distribution
+        string  contentCID;  // IPFS CID of article body
+        bytes32 contentHash; // keccak256 of content — proves no retroactive edits
+        uint256 writerStake; // tokens locked — slashed by Rewards if ranked out
+        bool    eligible;    // false = excluded from reward distribution
     }
 
     IEpochManager  public immutable epochManager;
@@ -62,31 +60,25 @@ contract ArticleRegistry {
 
     // ── Core: publish article ─────────────────────────────────────────────────
     /// @notice Submit an article during the submission phase of an epoch.
-    /// @dev contentHash stored on-chain as tamper evidence.
-    ///      Readers can verify article content matches what was submitted.
-    ///      No editArticle() exists, immutability after submission is intentional.
+    /// @dev contentHash stored on-chain as tamper evidence —
+    ///      readers can verify article content matches what was submitted.
+    ///      No editArticle() exists — immutability after submission is intentional.
     /// @param epochId      Epoch this article is submitted to.
     /// @param contentCID   IPFS CID of the article body.
     /// @param contentHash  keccak256 of article content.
-    /// @param manifestCID  IPFS CID of evidence manifest (sources, media, citations).
-    /// @param manifestHash keccak256 of evidence manifest, proves no retroactive edits.
     /// @param writerStake  Tokens locked — slashed if ranked outside reward positions.
     function publishArticle(
         uint256 epochId,
         string  calldata contentCID,
         bytes32 contentHash,
-        string  calldata manifestCID,
-        bytes32 manifestHash,
         uint256 writerStake
     ) external returns (uint256 articleId) {
         require(
             epochManager.currentPhase(epochId) == IEpochManager.Phase.Submission,
             "not in submission window"
         );
-        require(bytes(contentCID).length  > 0, "contentCID required");
-        require(contentHash  != bytes32(0),    "contentHash required");
-        require(bytes(manifestCID).length > 0, "manifestCID required");
-        require(manifestHash != bytes32(0),    "manifestHash required");
+        require(bytes(contentCID).length > 0, "contentCID required");
+        require(contentHash != bytes32(0),    "contentHash required");
         require(writerStake >= MIN_WRITER_STAKE, "stake too low");
         require(
             token.transferFrom(msg.sender, address(this), writerStake),
@@ -98,15 +90,13 @@ contract ArticleRegistry {
 
         articleId = nextArticleId++;
         _articles[articleId] = Article({
-            author:       msg.sender,
-            bucketId:     bucketId,
-            epochId:      epochId,
-            contentCID:   contentCID,
-            contentHash:  contentHash,
-            manifestCID:  manifestCID,
-            manifestHash: manifestHash,
-            writerStake:  writerStake,
-            eligible:     true
+            author:      msg.sender,
+            bucketId:    bucketId,
+            epochId:     epochId,
+            contentCID:  contentCID,
+            contentHash: contentHash,
+            writerStake: writerStake,
+            eligible:    true
         });
 
         epochArticles[epochId].push(articleId);
@@ -149,8 +139,6 @@ contract ArticleRegistry {
             uint256 bucketId,
             string  memory contentCID,
             bytes32 contentHash,
-            string  memory manifestCID,
-            bytes32 manifestHash,
             uint256 writerStake,
             bool    eligible
         )
@@ -162,8 +150,6 @@ contract ArticleRegistry {
             a.bucketId,
             a.contentCID,
             a.contentHash,
-            a.manifestCID,
-            a.manifestHash,
             a.writerStake,
             a.eligible
         );
