@@ -63,6 +63,13 @@ contract Rewards {
         staking         = IStaking(stakingAddress);
     }
 
+    // ── Views ───────────────────────────────────────────────────────────────────
+    /// @notice Ranked article IDs after finalize (`winners[0]` = rank 1). Empty before `finalizeEpoch`.
+    /// @dev The public `results` getter cannot return the dynamic `winners` array; use this instead.
+    function getWinners(uint256 epochId) external view returns (uint256[] memory) {
+        return results[epochId].winners;
+    }
+
     // ── Finalization ──────────────────────────────────────────────────────────
     /// @notice Finalize epoch — rank articles, slash losers, distribute writer pool.
     /// @dev Callable by anyone once epoch has ended.
