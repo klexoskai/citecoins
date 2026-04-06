@@ -6,9 +6,13 @@ describe("ArticleRegistry", function () {
   let token, buckets, epochs, articles;
   let owner, writer;
 
-  const ONE = 10n ** 18n; // represents 1 CITE token with 18 decimals
-  const INITIAL_SUPPLY = 1_000_000n * ONE; 
-  const WRITER_STAKE = 10n * ONE; 
+  const ONE = 10n ** 18n;
+  const INITIAL_SUPPLY = 1_000_000n * ONE;
+  const WRITER_STAKE = 10n * ONE;
+  const BUCKET_STAKE = 100n * ONE;
+
+  const CONTENT_HASH = "0x1234567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH = "0x2234567890123456789012345678901234567890123456789012345678901234";
 
   beforeEach(async function () {
     [owner, writer] = await hre.ethers.getSigners();
@@ -22,7 +26,8 @@ describe("ArticleRegistry", function () {
     epochs = await hre.ethers.getContractAt("EpochManager", await protocol.epochs());
     articles = await hre.ethers.getContractAt("ArticleRegistry", await protocol.articles());
 
-    await buckets.createBucket("ipfs://QmTestTopic");
+    await token.connect(owner).approve(await buckets.getAddress(), BUCKET_STAKE);
+    await buckets.createBucket("ipfs://QmTestTopic", BUCKET_STAKE);
 
     const now = (await hre.ethers.provider.getBlock("latest")).timestamp;
     await epochs.createEpoch(1, now + 10, now + 100, now + 100, now + 200);
@@ -33,47 +38,57 @@ describe("ArticleRegistry", function () {
 
   it("Should successfully publish article during submission phase if writer has stake", async function () {
     const ownerBal = await token.balanceOf(owner.address);
-
-    // ensure that ownerBal is more than 0
     await expect(ownerBal).to.be.gt(0n);
 
-    await token.connect(owner).transfer(writer.address, 100n * ONE); // transfer some tokens to writer for staking
-    await token.connect(writer).approve(await articles.getAddress(), WRITER_STAKE); // approve the article registry to spend writer's tokens
-
-    const contentHash =
-      "0x1234567890123456789012345678901234567890123456789012345678901234"; // random content hash for testing
+    await token.connect(owner).transfer(writer.address, 100n * ONE);
+    await token.connect(writer).approve(await articles.getAddress(), WRITER_STAKE);
 
     await expect(
       articles.connect(writer).publishArticle(
         1,
         "ipfs://QmArticleContent",
-        contentHash,
+        CONTENT_HASH,
+        "ipfs://QmManifestContent",
+        MANIFEST_HASH,
         WRITER_STAKE
       )
     ).to.not.be.reverted;
 
-    const ids = await articles.getEpochArticles(1); // check that the 1 article is registered under the epoch
+    const ids = await articles.getEpochArticles(1);
     expect(ids.length).to.equal(1);
   });
 
   it("Should revert publish without stake approval", async function () {
     const ownerBal = await token.balanceOf(owner.address);
-
-    // ensure that ownerBal is more than 0
     await expect(ownerBal).to.be.gt(0n);
 
-    await token.connect(owner).transfer(writer.address, 100n * ONE); // transfer some tokens to writer for staking
-
-    const contentHash =
-      "0x1234567890123456789012345678901234567890123456789012345678901234";
+    await token.connect(owner).transfer(writer.address, 100n * ONE);
 
     await expect(
       articles.connect(writer).publishArticle(
         1,
         "ipfs://QmArticleContent",
-        contentHash,
+        CONTENT_HASH,
+        "ipfs://QmManifestContent",
+        MANIFEST_HASH,
         WRITER_STAKE
       )
     ).to.be.reverted;
+  });
+
+  it("Should revert publish without manifestCID", async function () {
+    await token.connect(owner).transfer(writer.address, 100n * ONE);
+    await token.connect(writer).approve(await articles.getAddress(), WRITER_STAKE);
+
+    await expect(
+      articles.connect(writer).publishArticle(
+        1,
+        "ipfs://QmArticleContent",
+        CONTENT_HASH,
+        "",
+        MANIFEST_HASH,
+        WRITER_STAKE
+      )
+    ).to.be.revertedWith("manifestCID required");
   });
 });

@@ -108,7 +108,7 @@ Let:
 - `A = number of eligible articles` in epoch
 
 Define number of paid ranks:
-- `nPaid = clamp(A, min=3, max=10)`
+- `nPaid = clamp(floor(A/2), min=3, max=10)`, capped at `A`
 
 Only ranks `1..nPaid` receive writer rewards.
 This prevents bots from farming tiny “tail” payouts.
@@ -159,55 +159,32 @@ At finalize time:
 - rank descending
 - winning set `W` = top `nPaid` articles
 
-### 5.3 Base redistribution math (no time bonus)
+### 5.3 Redistribution math
 Let:
-- `S_win = sum_{a in W} rawStake(a)`
 - `S_lose = sum_{a not in W} rawStake(a)`
+- `fee = 5% * S_lose` (protocol fee, `FEE_BPS = 500`)
+- `readerPool = S_lose - fee`
 
-Define a protocol fee on losing redistribution (optional):
-- `fee = feeBps * S_lose`
-- `S_lose_net = S_lose - fee`
-
-A staker’s base payout (for their stake on winning articles) is:
-
-- `baseReward(u) = rawStakeOnWinners(u) * (S_lose_net / S_win)`
-
-where:
-- `rawStakeOnWinners(u) = sum_{a in W} rawStake(u, a)`
+Winning readers receive back their `rawStake` principal plus a share of `readerPool`:
+- `rewardShare(u) = (effectiveStake(u) / totalEffStake(winners)) * readerPool`
+  where `effectiveStake(u) = sqrt(rawStake(u))`
 
 Total received at claim:
-- `payout(u) = rawStakeOnWinners(u) + baseReward(u)`
-- `losing stakes` are not returned (or are partially returned if you design a softer penalty)
+- `payout(u) = rawStake(u) + rewardShare(u)`
 
-This is “prediction market style”: losers fund winners.
+Losing stakers forfeit their stake entirely.
 
-### 5.4 Time advantage (anti-bandwagoning) WITHOUT extra emissions
-A naive multiplier (e.g. `baseReward * 2x`) requires additional tokens.
-Instead, implement time advantage by reweighting how `S_lose_net` is divided among winning stakers.
+### 5.4 Anti-bandwagoning — commit-reveal
+Rather than time-weighted redistribution, v1 uses **commit-reveal voting** to prevent herding:
 
-Define a decreasing time weight function during staking window:
-- `timeWeight(t)` in [1.0, 2.0] (example)
-  - early stakes → higher weight
-  - late stakes → weight approaches 1.0
+- During the Staking phase, voters submit a blinded commitment: `keccak256(abi.encode(epochId, articleId, salt))`
+- Votes are only revealed after the epoch ends (Phase.Ended), making it impossible to watch others’ votes and pile in at the last moment
+- One commitment per voter per epoch; no changing votes after committing
 
-For each stake record `s_i` (amount, timestamp, winning/losing), define:
-- `weightedStake_i = amount_i * timeWeight(timestamp_i)`
-
-Compute:
-- `WS_win = sum(weightedStake_i for stakes on winning articles)`
-
-Then reward share:
-- `baseReward(u) = (weightedStakeOnWinners(u) / WS_win) * S_lose_net`
-
-This preserves conservation:
-- total redistributed = `S_lose_net`
-- time advantage changes distribution, not total payout
-
-### 5.5 Constraints (recommended)
-To reduce edge-case volatility:
-- impose minimum total stake per epoch for finalization
-- consider max ROI cap per epoch (optional; adds complexity)
-- cap number of articles per epoch to keep finalize gas bounded
+### 5.5 Constraints
+- Minimum writer stake (`10 CITE`) reduces spam publishing
+- Minimum bucket creation stake (`100 CITE`) deters low-quality topics
+- Cap number of articles per epoch to keep finalize gas bounded
 
 ---
 

@@ -10,7 +10,7 @@ contract EpochManager {
         NotStarted, // before submissionStart
         Submission, // writers can submit articles
         Staking,    // readers can commit + reveal votes
-        Ended       // stakingEnd passed — ready to finalize
+        Ended       // stakingEnd passed, ready to finalize
     }
 
     // ── Events ────────────────────────────────────────────────────────────────
@@ -62,13 +62,13 @@ contract EpochManager {
 
     // ── Core: create epoch ────────────────────────────────────────────────────
     /// @notice Create a time window for submissions and voting on a bucket.
-    /// @dev MVP: permissionless — any address can create an epoch for an active bucket.
+    /// @dev MVP: permissionless, any address can create an epoch for an active bucket.
     ///      Production: restrict to bucket creator only.
     /// @param bucketId        Bucket this epoch belongs to.
-    /// @param submissionStart Unix timestamp — writers can submit after this.
-    /// @param submissionEnd   Unix timestamp — submissions close at this point.
-    /// @param stakingStart    Unix timestamp — readers can vote after this.
-    /// @param stakingEnd      Unix timestamp — voting closes, epoch ready to finalize.
+    /// @param submissionStart Unix timestamp, writers can submit after this.
+    /// @param submissionEnd   Unix timestamp, submissions close at this point.
+    /// @param stakingStart    Unix timestamp, readers can vote after this.
+    /// @param stakingEnd      Unix timestamp, voting closes and epoch is ready to finalize.
     function createEpoch(
         uint256 bucketId,
         uint64  submissionStart,
@@ -77,7 +77,7 @@ contract EpochManager {
         uint64  stakingEnd
     ) external returns (uint256 epochId) {
         // Verify bucket exists and is active
-        (,,, bool active) = bucketManager.getBucket(bucketId);
+        (,,,, bool active) = bucketManager.getBucket(bucketId);
         require(active, "bucket inactive");
 
         // Time window validation
@@ -120,7 +120,7 @@ contract EpochManager {
     }
 
     // ── Finalization flag ─────────────────────────────────────────────────────
-    /// @notice Mark epoch as finalized — called by Rewards as last step.
+    /// @notice Mark epoch as finalized. Called by Rewards as the last step.
     ///         Prevents double-finalization of the same epoch.
     function markFinalized(uint256 epochId) external onlyRewards {
         require(epochId > 0 && epochId < nextEpochId, "epoch not found");

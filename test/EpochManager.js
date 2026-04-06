@@ -8,6 +8,7 @@ describe("EpochManager", function () {
 
   const ONE = 10n ** 18n; // represents 1 token with 18 decimals
   const INITIAL_SUPPLY = 1_000_000n * ONE;
+  const BUCKET_STAKE = 100n * ONE;
 
   beforeEach(async function () {
     [owner] = await hre.ethers.getSigners();
@@ -20,7 +21,8 @@ describe("EpochManager", function () {
     buckets = await hre.ethers.getContractAt("BucketManager", await protocol.buckets());
     epochs = await hre.ethers.getContractAt("EpochManager", await protocol.epochs());
 
-    await buckets.createBucket("ipfs://QmTestTopic");
+    await token.connect(owner).approve(await buckets.getAddress(), BUCKET_STAKE);
+    await buckets.createBucket("ipfs://QmTestTopic", BUCKET_STAKE);
   });
 
   async function latestTime() {

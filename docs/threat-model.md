@@ -58,10 +58,9 @@ Residual risk: sybil remains a major limitation without identity.
 Users wait until the last moment and pile into the expected winner.
 
 ### Mitigation
-- Implement time advantage as **redistribution weighting**:
-  - earlier winning stakes capture a larger share of `S_lose_net`
-  - no extra emissions required
-- Stake lock until finalize prevents “flip-flopping” after signals emerge
+- **Commit-reveal voting**: during the Staking phase, voters submit a blinded commitment (`keccak256(abi.encode(epochId, articleId, salt))`). Votes are only revealed after the epoch ends (Phase.Ended). No one can see others' votes and pile in.
+- One commit per voter per epoch; no changing votes after committing.
+- Stake locked until finalization prevents “flip-flopping”.
 
 ---
 
@@ -123,9 +122,10 @@ Evidence may include illegal material or harmful content.
 Manipulate finalize timing or stake ordering.
 
 ### Mitigations
-- deterministic finalize after `stakingEnd`
-- stake lock and strict window enforcement
-- consider commit-reveal staking later if needed (adds complexity)
+- deterministic finalize after `stakingEnd` — anyone can call `finalizeEpoch`
+- stake locked in contract until finalization; no withdrawals mid-epoch
+- commit-reveal prevents vote sniping (votes hidden until after epoch ends)
+- winner selection is fully deterministic (insertion sort with explicit tie-breaking)
 
 ---
 

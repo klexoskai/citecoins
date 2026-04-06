@@ -8,9 +8,13 @@ describe("Rewards", function () {
 
   const ONE = 10n ** 18n;
   const INITIAL_SUPPLY = 1_000_000n * ONE;
+  const BUCKET_STAKE = 100n * ONE;
   const WRITER_STAKE = 10n * ONE;
   const READER_STAKE = 50n * ONE;
   const WRITER_POOL = 500n * ONE;
+
+  const CONTENT_HASH = "0x1234567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH = "0x3334567890123456789012345678901234567890123456789012345678901234";
 
   beforeEach(async function () {
     [owner, writer, reader1, reader2] = await hre.ethers.getSigners();
@@ -35,8 +39,8 @@ describe("Rewards", function () {
     await token.connect(owner).transfer(reader2.address, 100n * ONE);
 
     // create and fund bucket
-    await buckets.connect(owner).createBucket("ipfs://QmTestTopic");
-    await token.connect(owner).approve(await buckets.getAddress(), WRITER_POOL);
+    await token.connect(owner).approve(await buckets.getAddress(), BUCKET_STAKE + WRITER_POOL);
+    await buckets.connect(owner).createBucket("ipfs://QmTestTopic", BUCKET_STAKE);
     await buckets.connect(owner).fundBucket(1, WRITER_POOL);
 
     // create epoch
@@ -49,14 +53,12 @@ describe("Rewards", function () {
 
     // publish article
     await token.connect(writer).approve(await articles.getAddress(), WRITER_STAKE);
-
-    const contentHash =
-      "0x1234567890123456789012345678901234567890123456789012345678901234";
-
     await articles.connect(writer).publishArticle(
       1,
       "ipfs://QmArticleContent",
-      contentHash,
+      CONTENT_HASH,
+      "ipfs://QmManifestContent",
+      MANIFEST_HASH,
       WRITER_STAKE
     );
 
@@ -64,9 +66,9 @@ describe("Rewards", function () {
     await hre.network.provider.send("evm_increaseTime", [11]);
     await hre.network.provider.send("evm_mine");
 
-    // one-way support vote hashes: keccak256(abi.encode(epochId, articleId, salt))
-    const salt1 = hre.ethers.encodeBytes32String("salt_reader3");
-    const salt2 = hre.ethers.encodeBytes32String("salt_reader4");
+    // commit votes during staking phase
+    const salt1 = hre.ethers.encodeBytes32String("salt_reader1");
+    const salt2 = hre.ethers.encodeBytes32String("salt_reader2");
 
     const hash1 = hre.ethers.keccak256(
       hre.ethers.AbiCoder.defaultAbiCoder().encode(
@@ -74,7 +76,6 @@ describe("Rewards", function () {
         [1, 1, salt1]
       )
     );
-
     const hash2 = hre.ethers.keccak256(
       hre.ethers.AbiCoder.defaultAbiCoder().encode(
         ["uint256", "uint256", "bytes32"],
@@ -85,17 +86,16 @@ describe("Rewards", function () {
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE);
     await token.connect(reader2).approve(await staking.getAddress(), READER_STAKE);
 
-    // updated commitVote signature: (epochId, commitHash, rawStake)
     await staking.connect(reader1).commitVote(1, hash1, READER_STAKE);
     await staking.connect(reader2).commitVote(1, hash2, READER_STAKE);
 
-    // updated revealVote signature: (epochId, articleId, salt)
+    // move past staking end so reveals are allowed (Phase.Ended)
+    await hre.network.provider.send("evm_increaseTime", [40]);
+    await hre.network.provider.send("evm_mine");
+
+    // reveal votes during Ended phase
     await staking.connect(reader1).revealVote(1, 1, salt1);
     await staking.connect(reader2).revealVote(1, 1, salt2);
-
-    // move past staking end
-    await hre.network.provider.send("evm_increaseTime", [61]);
-    await hre.network.provider.send("evm_mine");
   });
 
   it("Should finalize after epoch end", async function () {
@@ -162,8 +162,8 @@ describe("Rewards", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    await buckets.connect(owner).createBucket("ipfs://QmTestTopic");
-    await token.connect(owner).approve(await buckets.getAddress(), WRITER_POOL);
+    await token.connect(owner).approve(await buckets.getAddress(), BUCKET_STAKE + WRITER_POOL);
+    await buckets.connect(owner).createBucket("ipfs://QmTestTopic", BUCKET_STAKE);
     await buckets.connect(owner).fundBucket(1, WRITER_POOL);
 
     const now = (await hre.ethers.provider.getBlock("latest")).timestamp;

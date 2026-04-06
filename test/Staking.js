@@ -8,8 +8,12 @@ describe("Staking", function () {
 
   const ONE = 10n ** 18n;
   const INITIAL_SUPPLY = 1_000_000n * ONE;
+  const BUCKET_STAKE = 100n * ONE;
   const WRITER_STAKE = 10n * ONE;
   const READER_STAKE = 50n * ONE;
+
+  const CONTENT_HASH = "0x1234567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH = "0x3334567890123456789012345678901234567890123456789012345678901234";
 
   beforeEach(async function () {
     [owner, writer, reader1, reader2] = await hre.ethers.getSigners();
@@ -31,7 +35,8 @@ describe("Staking", function () {
     await token.connect(owner).transfer(reader1.address, 100n * ONE);
     await token.connect(owner).transfer(reader2.address, 100n * ONE);
 
-    await buckets.createBucket("ipfs://QmTestTopic");
+    await token.connect(owner).approve(await buckets.getAddress(), BUCKET_STAKE);
+    await buckets.createBucket("ipfs://QmTestTopic", BUCKET_STAKE);
 
     const now = (await hre.ethers.provider.getBlock("latest")).timestamp;
     await epochs.createEpoch(1, now + 10, now + 20, now + 20, now + 100);
@@ -41,19 +46,23 @@ describe("Staking", function () {
 
     await token.connect(writer).approve(await articles.getAddress(), WRITER_STAKE);
 
-    const contentHash =
-      "0x1234567890123456789012345678901234567890123456789012345678901234";
-
     await articles.connect(writer).publishArticle(
       1,
       "ipfs://QmArticleContent",
-      contentHash,
+      CONTENT_HASH,
+      "ipfs://QmManifestContent",
+      MANIFEST_HASH,
       WRITER_STAKE
     );
 
     await hre.network.provider.send("evm_increaseTime", [11]);
     await hre.network.provider.send("evm_mine");
   });
+
+  async function advanceToEnded() {
+    await hre.network.provider.send("evm_increaseTime", [80]);
+    await hre.network.provider.send("evm_mine");
+  }
 
   function commitHash(epochId, articleId, saltString) {
     const salt = hre.ethers.encodeBytes32String(saltString);
@@ -69,8 +78,8 @@ describe("Staking", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    const hash1 = commitHash(1, 1, "salt_reader3");
-    const hash2 = commitHash(1, 1, "salt_reader4");
+    const hash1 = commitHash(1, 1, "salt_reader1");
+    const hash2 = commitHash(1, 1, "salt_reader2");
 
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE);
     await token.connect(reader2).approve(await staking.getAddress(), READER_STAKE);
@@ -88,17 +97,19 @@ describe("Staking", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    const salt1 = hre.ethers.encodeBytes32String("salt_reader3");
-    const salt2 = hre.ethers.encodeBytes32String("salt_reader4");
+    const salt1 = hre.ethers.encodeBytes32String("salt_reader1");
+    const salt2 = hre.ethers.encodeBytes32String("salt_reader2");
 
-    const hash1 = commitHash(1, 1, "salt_reader3");
-    const hash2 = commitHash(1, 1, "salt_reader4");
+    const hash1 = commitHash(1, 1, "salt_reader1");
+    const hash2 = commitHash(1, 1, "salt_reader2");
 
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE);
     await token.connect(reader2).approve(await staking.getAddress(), READER_STAKE);
 
     await staking.connect(reader1).commitVote(1, hash1, READER_STAKE);
     await staking.connect(reader2).commitVote(1, hash2, READER_STAKE);
+
+    await advanceToEnded();
 
     await expect(
       staking.connect(reader1).revealVote(1, 1, salt1)
@@ -113,11 +124,14 @@ describe("Staking", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    const salt1 = hre.ethers.encodeBytes32String("salt_reader3");
-    const hash1 = commitHash(1, 1, "salt_reader3");
+    const salt1 = hre.ethers.encodeBytes32String("salt_reader1");
+    const hash1 = commitHash(1, 1, "salt_reader1");
 
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE);
     await staking.connect(reader1).commitVote(1, hash1, READER_STAKE);
+
+    await advanceToEnded();
+
     await staking.connect(reader1).revealVote(1, 1, salt1);
 
     const supportWeight = await staking.getTally(1, 1);
@@ -128,10 +142,12 @@ describe("Staking", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    const hash1 = commitHash(1, 1, "salt_reader3");
+    const hash1 = commitHash(1, 1, "salt_reader1");
 
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE);
     await staking.connect(reader1).commitVote(1, hash1, READER_STAKE);
+
+    await advanceToEnded();
 
     await expect(
       staking.connect(reader1).revealVote(
@@ -146,11 +162,14 @@ describe("Staking", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    const salt1 = hre.ethers.encodeBytes32String("salt_reader3");
-    const hash1 = commitHash(1, 1, "salt_reader3");
+    const salt1 = hre.ethers.encodeBytes32String("salt_reader1");
+    const hash1 = commitHash(1, 1, "salt_reader1");
 
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE);
     await staking.connect(reader1).commitVote(1, hash1, READER_STAKE);
+
+    await advanceToEnded();
+
     await staking.connect(reader1).revealVote(1, 1, salt1);
 
     await expect(
@@ -162,8 +181,8 @@ describe("Staking", function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
-    const hash1 = commitHash(1, 1, "salt_reader3");
-    const hash2 = commitHash(1, 1, "salt_reader4");
+    const hash1 = commitHash(1, 1, "salt_reader1");
+    const hash2 = commitHash(1, 1, "salt_reader2");
 
     await token.connect(reader1).approve(await staking.getAddress(), READER_STAKE * 2n);
 
