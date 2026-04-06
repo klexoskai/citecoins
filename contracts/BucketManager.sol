@@ -5,7 +5,6 @@ import "./interfaces/ICitecoinToken.sol";
 
 contract BucketManager {
 
-    // ── Events ────────────────────────────────────────────────────────────────
     event BucketCreated(uint256 indexed bucketId, address indexed creator, string topicURI);
     event BucketFunded(uint256 indexed bucketId, address indexed funder, uint256 amount);
     event BucketWithdrawn(uint256 indexed bucketId, address indexed to, uint256 amount);
@@ -13,7 +12,6 @@ contract BucketManager {
     event BucketStakeSlashed(uint256 indexed bucketId, address indexed creator, uint256 amount);
     event BucketStakeReleased(uint256 indexed bucketId, address indexed creator, uint256 amount);
 
-    // ── Storage ───────────────────────────────────────────────────────────────
     struct Bucket {
         address creator;
         string  topicURI;
@@ -22,9 +20,9 @@ contract BucketManager {
         bool    active;
     }
 
-    // MVP: flat 5% fee, no per-bucket config needed
-    uint16  public constant FEE_BPS            = 500;
-    uint256 public constant MIN_BUCKET_STAKE   = 100e18; // 100 CITE to create a bucket
+    // flat 5% fee on losing reader stakes
+    uint16  public constant FEE_BPS          = 500;
+    uint256 public constant MIN_BUCKET_STAKE = 100e18;
 
     ICitecoinToken public immutable token;
     address        public immutable deployer;
@@ -33,32 +31,24 @@ contract BucketManager {
     uint256 public nextBucketId = 1;
     mapping(uint256 => Bucket) internal _buckets;
 
-    // ── Constructor ───────────────────────────────────────────────────────────
     constructor(address tokenAddress) {
         token    = ICitecoinToken(tokenAddress);
         deployer = msg.sender;
     }
 
-    // ── Modifiers ─────────────────────────────────────────────────────────────
     modifier onlyRewards() {
         require(msg.sender == rewards, "not rewards");
         _;
     }
 
-    // ── Wiring ────────────────────────────────────────────────────────────────
-    /// @notice Called once by CitecoinsProtocol to authorise Rewards contract.
     function setRewards(address rewardsAddress) external {
         require(msg.sender == deployer, "not deployer");
         require(rewards == address(0), "rewards already set");
         rewards = rewardsAddress;
     }
 
-    // ── Core: create bucket ───────────────────────────────────────────────────
-    /// @notice Create a topic bucket. Requires a stake to deter low-quality topics.
-    ///         Stake is returned at finalization if participation is sufficient,
-    ///         slashed if the epoch ends with no eligible articles.
-    /// @param topicURI    IPFS URI pointing to the full topic description and guidelines.
-    /// @param stakeAmount Tokens to lock, must be >= MIN_BUCKET_STAKE.
+    // Creator stakes MIN_BUCKET_STAKE to deter low-quality topics.
+    // Stake is returned at finalization if ≥2 articles get reader support, slashed otherwise.
     function createBucket(
         string calldata topicURI,
         uint256 stakeAmount
@@ -81,10 +71,6 @@ contract BucketManager {
         emit BucketCreated(bucketId, msg.sender, topicURI);
     }
 
-    // ── Core: fund bucket ─────────────────────────────────────────────────────
-    /// @notice Add tokens to a bucket's reward pool.
-    ///         Callable by anyone (NGOs, DAOs, individuals).
-    ///         Funds are held here until Rewards pulls them at finalization.
     function fundBucket(uint256 bucketId, uint256 amount) external {
         Bucket storage b = _buckets[bucketId];
         require(b.active,   "bucket inactive");
@@ -97,10 +83,7 @@ contract BucketManager {
         emit BucketFunded(bucketId, msg.sender, amount);
     }
 
-    // ── Rewards interface ─────────────────────────────────────────────────────
-    /// @notice Pull funds from bucket into Rewards for writer payouts.
-    /// @dev Must be called before deactivateBucket.
-    ///      deactivateBucket sets active=false which would block this call.
+    // Must be called before deactivateBucket — deactivation sets active=false and would block this.
     function withdrawBucketFunds(
         uint256 bucketId,
         address to,
@@ -115,16 +98,14 @@ contract BucketManager {
         emit BucketWithdrawn(bucketId, to, amount);
     }
 
-    /// @notice Deactivate bucket and release creator stake back. Called by Rewards
-    ///         when epoch finalizes with sufficient participation (eligibleCount > 0).
     function deactivateBucket(uint256 bucketId) external onlyRewards {
         Bucket storage b = _buckets[bucketId];
         require(b.active, "already inactive");
         b.active = false;
 
         if (b.creatorStake > 0) {
-            uint256 amount   = b.creatorStake;
-            b.creatorStake   = 0;
+            uint256 amount = b.creatorStake;
+            b.creatorStake = 0;
             require(token.transfer(b.creator, amount), "stake release failed");
             emit BucketStakeReleased(bucketId, b.creator, amount);
         }
@@ -132,8 +113,6 @@ contract BucketManager {
         emit BucketDeactivated(bucketId);
     }
 
-    /// @notice Slash creator stake — called by Rewards when epoch ends with no
-    ///         eligible articles (low participation = bad topic).
     function slashBucketStake(uint256 bucketId) external onlyRewards returns (uint256 slashed) {
         Bucket storage b = _buckets[bucketId];
         require(b.creatorStake > 0, "nothing to slash");
@@ -145,8 +124,6 @@ contract BucketManager {
         emit BucketDeactivated(bucketId);
     }
 
-    // ── View helpers ──────────────────────────────────────────────────────────
-    /// @notice Returns bucket fields individually — avoids cross-contract struct errors.
     function getBucket(uint256 bucketId) external view returns (
         address creator,
         string  memory topicURI,
@@ -155,12 +132,6 @@ contract BucketManager {
         bool    active
     ) {
         Bucket storage b = _buckets[bucketId];
-        return (
-            b.creator,
-            b.topicURI,
-            b.fundedRewards,
-            b.creatorStake,
-            b.active
-        );
+        return (b.creator, b.topicURI, b.fundedRewards, b.creatorStake, b.active);
     }
 }

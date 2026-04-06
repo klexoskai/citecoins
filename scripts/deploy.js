@@ -15,20 +15,22 @@ async function main() {
   const protocolAddr = await protocol.getAddress();
 
   // Read component addresses from the protocol contract
-  const token = await protocol.token();
-  const buckets = await protocol.buckets();
-  const epochs = await protocol.epochs();
-  const articles = await protocol.articles();
-  const staking = await protocol.staking();
-  const rewards = await protocol.rewards();
+  const token      = await protocol.token();
+  const buckets    = await protocol.buckets();
+  const epochs     = await protocol.epochs();
+  const articles   = await protocol.articles();
+  const staking    = await protocol.staking();
+  const rewards    = await protocol.rewards();
+  const repManager = await protocol.repManager();
 
-  console.log("CitecoinsProtocol:", protocolAddr);
-  console.log("CitecoinToken:", token);
-  console.log("BucketManager:", buckets);
-  console.log("EpochManager:", epochs);
-  console.log("ArticleRegistry:", articles);
-  console.log("Staking:", staking);
-  console.log("Rewards:", rewards);
+  console.log("CitecoinsProtocol:  ", protocolAddr);
+  console.log("CitecoinToken:      ", token);
+  console.log("BucketManager:      ", buckets);
+  console.log("EpochManager:       ", epochs);
+  console.log("ArticleRegistry:    ", articles);
+  console.log("Staking:            ", staking);
+  console.log("Rewards:            ", rewards);
+  console.log("ReputationManager:  ", repManager);
 }
 
 main().catch((err) => {
