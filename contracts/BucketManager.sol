@@ -10,17 +10,21 @@ contract BucketManager {
     event BucketFunded(uint256 indexed bucketId, address indexed funder, uint256 amount);
     event BucketWithdrawn(uint256 indexed bucketId, address indexed to, uint256 amount);
     event BucketDeactivated(uint256 indexed bucketId);
+    event BucketStakeSlashed(uint256 indexed bucketId, address indexed creator, uint256 amount);
+    event BucketStakeReleased(uint256 indexed bucketId, address indexed creator, uint256 amount);
 
     // ── Storage ───────────────────────────────────────────────────────────────
     struct Bucket {
         address creator;
         string  topicURI;
         uint256 fundedRewards;
+        uint256 creatorStake;  // locked at creation, slashed on low participation
         bool    active;
     }
 
     // MVP: flat 5% fee, no per-bucket config needed
-    uint16 public constant FEE_BPS = 500;
+    uint16  public constant FEE_BPS            = 500;
+    uint256 public constant MIN_BUCKET_STAKE   = 100e18; // 100 CITE to create a bucket
 
     ICitecoinToken public immutable token;
     address        public immutable deployer;
@@ -50,18 +54,27 @@ contract BucketManager {
     }
 
     // ── Core: create bucket ───────────────────────────────────────────────────
-    /// @notice Create a topic bucket.
-    ///         Anyone can create a bucket — permissionless topic creation.
-    /// @param topicURI IPFS URI pointing to the full topic description and guidelines.
+    /// @notice Create a topic bucket. Requires a stake to deter low-quality topics.
+    ///         Stake is returned at finalization if participation is sufficient,
+    ///         slashed if the epoch ends with no eligible articles.
+    /// @param topicURI    IPFS URI pointing to the full topic description and guidelines.
+    /// @param stakeAmount Tokens to lock, must be >= MIN_BUCKET_STAKE.
     function createBucket(
-        string calldata topicURI
+        string calldata topicURI,
+        uint256 stakeAmount
     ) external returns (uint256 bucketId) {
-        bucketId = nextBucketId++;
+        require(stakeAmount >= MIN_BUCKET_STAKE, "stake too low");
+        require(
+            token.transferFrom(msg.sender, address(this), stakeAmount),
+            "stake transfer failed"
+        );
 
+        bucketId = nextBucketId++;
         _buckets[bucketId] = Bucket({
             creator:       msg.sender,
             topicURI:      topicURI,
             fundedRewards: 0,
+            creatorStake:  stakeAmount,
             active:        true
         });
 
@@ -70,8 +83,8 @@ contract BucketManager {
 
     // ── Core: fund bucket ─────────────────────────────────────────────────────
     /// @notice Add tokens to a bucket's reward pool.
-    ///         Callable by anyone — NGOs, DAOs, individuals.
-    ///         Funds held here until Rewards pulls them at finalization.
+    ///         Callable by anyone (NGOs, DAOs, individuals).
+    ///         Funds are held here until Rewards pulls them at finalization.
     function fundBucket(uint256 bucketId, uint256 amount) external {
         Bucket storage b = _buckets[bucketId];
         require(b.active,   "bucket inactive");
@@ -86,8 +99,8 @@ contract BucketManager {
 
     // ── Rewards interface ─────────────────────────────────────────────────────
     /// @notice Pull funds from bucket into Rewards for writer payouts.
-    /// @dev Must be called BEFORE deactivateBucket —
-    ///      deactivateBucket sets active=false which blocks this call.
+    /// @dev Must be called before deactivateBucket.
+    ///      deactivateBucket sets active=false which would block this call.
     function withdrawBucketFunds(
         uint256 bucketId,
         address to,
@@ -102,13 +115,33 @@ contract BucketManager {
         emit BucketWithdrawn(bucketId, to, amount);
     }
 
-    /// @notice Deactivate bucket at end of epoch.
-    /// @dev MVP: no creator stake, no slash logic — just marks inactive.
-    ///      Called by Rewards as final step of finalization.
+    /// @notice Deactivate bucket and release creator stake back. Called by Rewards
+    ///         when epoch finalizes with sufficient participation (eligibleCount > 0).
     function deactivateBucket(uint256 bucketId) external onlyRewards {
         Bucket storage b = _buckets[bucketId];
         require(b.active, "already inactive");
         b.active = false;
+
+        if (b.creatorStake > 0) {
+            uint256 amount   = b.creatorStake;
+            b.creatorStake   = 0;
+            require(token.transfer(b.creator, amount), "stake release failed");
+            emit BucketStakeReleased(bucketId, b.creator, amount);
+        }
+
+        emit BucketDeactivated(bucketId);
+    }
+
+    /// @notice Slash creator stake — called by Rewards when epoch ends with no
+    ///         eligible articles (low participation = bad topic).
+    function slashBucketStake(uint256 bucketId) external onlyRewards returns (uint256 slashed) {
+        Bucket storage b = _buckets[bucketId];
+        require(b.creatorStake > 0, "nothing to slash");
+        slashed        = b.creatorStake;
+        b.creatorStake = 0;
+        b.active       = false;
+        require(token.transfer(rewards, slashed), "transfer failed");
+        emit BucketStakeSlashed(bucketId, b.creator, slashed);
         emit BucketDeactivated(bucketId);
     }
 
@@ -118,6 +151,7 @@ contract BucketManager {
         address creator,
         string  memory topicURI,
         uint256 fundedRewards,
+        uint256 creatorStake,
         bool    active
     ) {
         Bucket storage b = _buckets[bucketId];
@@ -125,6 +159,7 @@ contract BucketManager {
             b.creator,
             b.topicURI,
             b.fundedRewards,
+            b.creatorStake,
             b.active
         );
     }

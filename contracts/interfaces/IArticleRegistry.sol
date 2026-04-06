@@ -6,6 +6,8 @@ interface IArticleRegistry {
         uint256 epochId,
         string  calldata contentCID,
         bytes32 contentHash,
+        string  calldata manifestCID,
+        bytes32 manifestHash,
         uint256 writerStake
     ) external returns (uint256 articleId);
 
@@ -15,6 +17,8 @@ interface IArticleRegistry {
         uint256 bucketId,
         string  memory contentCID,
         bytes32 contentHash,
+        string  memory manifestCID,
+        bytes32 manifestHash,
         uint256 writerStake,
         bool    eligible
     );
