@@ -10,6 +10,15 @@
     "build": "hardhat compile",
     "test": "hardhat test",
     "node": "hardhat node",
-    "deploy": "hardhat run scripts/deploy.js --network hardhat"
+    "deploy": "hardhat run scripts/deploy.js --network hardhat",
+    "fund:roles": "hardhat run scripts/fundRoles.js --network localhost",
+    "demo:articles": "hardhat run scripts/bucketAndArticles.js --network localhost",
+    "demo:reader-vote": "hardhat run scripts/readerCommitVote.js --network localhost",
+    "demo:finalize": "hardhat run scripts/finalizeEpoch.js --network localhost",
+    "demo:claim": "hardhat run scripts/claimRewards.js --network localhost",
+    "demo:sanity": "hardhat run scripts/sanityBalances.js --network localhost"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1"
   }
 }
