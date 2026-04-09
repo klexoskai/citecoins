@@ -36,7 +36,7 @@ contract Rewards {
         uint8     nPaid;
         uint256[] winners;    // articleIds ordered rank 1..nPaid
         uint256   writerPool;
-        uint256   readerPool; // losing reader stakes redistributed to winners
+        uint256   readerPool; // 95% of all slashed reader + writer stakes
     }
 
     ICitecoinToken     public immutable token;
@@ -156,11 +156,6 @@ contract Rewards {
         uint256[] memory winners,
         uint256          writerPoolAmount
     ) internal returns (uint256 readerPool) {
-        uint256 S_win = 0;
-        for (uint256 i = 0; i < winners.length; i++) {
-            S_win += _rawStakeOnArticle(epochId, winners[i]);
-        }
-
         uint256 S_lose = 0;
         for (uint256 i = 0; i < articleIds.length; i++) {
             if (_rankOf(winners, articleIds[i]) == 0) {
@@ -168,11 +163,12 @@ contract Rewards {
             }
         }
 
-        uint256 feeTaken = (S_lose * bucketManager.FEE_BPS()) / 10_000;
-        readerPool = S_lose - feeTaken;
+        uint256 slashedWriterStake = _settleWriterStakes(articleIds, winners, uint8(winners.length));
+        uint256 readerPoolBase = S_lose + slashedWriterStake;
+        uint256 feeTaken = (readerPoolBase * bucketManager.FEE_BPS()) / 10_000;
+        readerPool = readerPoolBase - feeTaken;
 
         _slashLosers(epochId, articleIds, winners);
-        _settleWriterStakes(articleIds, winners, uint8(winners.length));
 
         if (writerPoolAmount > 0) {
             bucketManager.withdrawBucketFunds(bucketId, address(this), writerPoolAmount);
@@ -272,7 +268,7 @@ contract Rewards {
         uint256[] memory allArticles,
         uint256[] memory winners,
         uint8            nPaid
-    ) internal {
+    ) internal returns (uint256 totalSlashed) {
         for (uint256 i = 0; i < allArticles.length; i++) {
             uint256 articleId = allArticles[i];
             uint256 rank = _rankOf(winners, articleId);
@@ -284,7 +280,7 @@ contract Rewards {
             if (rank != 0 && rank <= nPaid) {
                 articleRegistry.releaseStake(articleId, author);
             } else {
-                articleRegistry.slashStake(articleId);
+                totalSlashed += articleRegistry.slashStake(articleId);
             }
         }
     }
