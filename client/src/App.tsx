@@ -19,6 +19,7 @@ import EpochDetail from "@/pages/epoch-detail";
 import ArticleDetail from "@/pages/article-detail";
 import Claim from "@/pages/claim";
 import Profile from "@/pages/profile";
+import TopicPreviewPage from "@/pages/topic-preview";
 
 // ── Router ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ function AppRouter() {
         <Route path="/articles/:id" component={ArticleDetail} />
         <Route path="/claim" component={Claim} />
         <Route path="/profile" component={Profile} />
+        <Route path="/topics/:id" component={TopicPreviewPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

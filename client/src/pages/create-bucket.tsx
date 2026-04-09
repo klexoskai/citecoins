@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { ArrowLeft, Upload, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Upload, CheckCircle2, Wallet, AlertCircle, Sparkles } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { useBucketActions, uploadToPinata } from "@/lib/contracts/hooks";
-import { useWallet } from "@/lib/contracts/wallet";
+import { useWallet, shortenAddress } from "@/lib/contracts/wallet";
 import type { TopicMetadata } from "@/lib/contracts/types";
+import { MOCK_TOPICS } from "@/lib/mockContent";
+import { addTopicStake, getTopicStake } from "@/lib/mockStakes";
 
 // ── Status steps ──────────────────────────────────────────────────────────────
 
@@ -51,12 +53,28 @@ const INITIAL_FORM: FormState = {
 
 export default function CreateBucket() {
   const [, navigate] = useLocation();
-  const { address } = useWallet();
+  const { address, connect, isConnecting, error: walletError } = useWallet();
   const { createBucket, fundBucket, getNextBucketId } = useBucketActions();
 
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [step, setStep] = useState<TxStep>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [mockStakes, setMockStakes] = useState<Record<string, number>>(() => {
+    const next: Record<string, number> = {};
+    for (const topic of MOCK_TOPICS) {
+      next[topic.id] = getTopicStake(topic.id);
+    }
+    return next;
+  });
+  const [mockStakeInputs, setMockStakeInputs] = useState<Record<string, string>>({});
+
+  const handleMockStake = (topicId: string, amountText: string) => {
+    const amount = Number(amountText);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const nextStake = addTopicStake(topicId, amount);
+    setMockStakes((prev) => ({ ...prev, [topicId]: nextStake }));
+    setMockStakeInputs((prev) => ({ ...prev, [topicId]: "" }));
+  };
 
   const set = (field: keyof FormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -114,21 +132,7 @@ export default function CreateBucket() {
 
   const isSubmitting = ["uploading", "creating", "funding"].includes(step);
   const isDone = step === "done";
-
-  // ── Wallet not connected ──────────────────────────────────────────────────
-
-  if (!address) {
-    return (
-      <div className="max-w-2xl mx-auto" data-testid="create-bucket-page">
-        <div className="flex flex-col items-center py-20 text-center gap-3">
-          <p className="text-sm font-medium">Connect your wallet to create a bucket</p>
-          <p className="text-sm text-muted-foreground">
-            You need a connected wallet to publish on-chain.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const canSubmit = !!address && !isSubmitting && !isDone && !!form.title.trim() && !!form.description.trim();
 
   // ── Main form ─────────────────────────────────────────────────────────────
 
@@ -143,6 +147,49 @@ export default function CreateBucket() {
           </Button>
         </Link>
       </div>
+
+      <Card className="border-primary/30 bg-primary/5">
+        <CardContent className="pt-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium flex items-center gap-2">
+                <Sparkles size={14} className="text-primary" />
+                Create a citation bounty bucket
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Wallet status is checked first so you can publish smoothly.
+              </p>
+              {address ? (
+                <p className="text-xs text-primary">
+                  Connected: <span className="font-mono">{shortenAddress(address)}</span>
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Connect wallet to enable on-chain creation and funding.
+                </p>
+              )}
+              {walletError && (
+                <p className="text-xs text-destructive flex items-center gap-1.5">
+                  <AlertCircle size={12} />
+                  {walletError}
+                </p>
+              )}
+            </div>
+            {!address && (
+              <Button
+                size="sm"
+                className="gap-2 shrink-0"
+                onClick={() => connect()}
+                disabled={isConnecting}
+                data-testid="connect-wallet-create-bucket"
+              >
+                <Wallet size={14} />
+                {isConnecting ? "Connecting…" : "Connect Wallet"}
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card data-testid="create-bucket-card">
         <CardHeader className="pb-4">
@@ -267,6 +314,13 @@ export default function CreateBucket() {
               </p>
             </div>
 
+            {!address && (
+              <div className="flex items-center gap-2 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/25 rounded-md px-3 py-2">
+                <AlertCircle size={13} />
+                Connect your wallet first. Form is visible for planning, but submission is disabled.
+              </div>
+            )}
+
             {/* Status display */}
             {(isSubmitting || isDone || step === "error") && (
               <div
@@ -306,13 +360,72 @@ export default function CreateBucket() {
               <Button
                 type="submit"
                 size="sm"
-                disabled={isSubmitting || isDone || !form.title.trim() || !form.description.trim()}
+                disabled={!canSubmit}
                 data-testid="create-bucket-submit"
               >
                 {isSubmitting ? "Processing…" : isDone ? "Created!" : "Create Bucket"}
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="font-serif text-lg font-normal">Quick Start Topics</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Explore pre-populated demo topics. Clicking a topic opens six mock articles.
+          </p>
+        </CardHeader>
+        <Separator />
+        <CardContent className="pt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {MOCK_TOPICS.map((topic) => (
+              <Link key={topic.id} href={`/topics/${topic.id}`}>
+                <Card className="cursor-pointer hover:border-primary/50 transition-colors">
+                  <div className="aspect-[16/8] w-full overflow-hidden rounded-t-lg border-b border-border">
+                    <img
+                      src={topic.imageUrl}
+                      alt={topic.title}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                  <CardContent className="py-3 space-y-2">
+                    <p className="text-sm font-medium leading-snug">{topic.title}</p>
+                    <p className="text-xs text-muted-foreground line-clamp-2">{topic.description}</p>
+                    <p className="text-xs text-primary font-medium">
+                      {(mockStakes[topic.id] ?? 0).toLocaleString()} CITE staked
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="Amount"
+                        className="h-8"
+                        value={mockStakeInputs[topic.id] ?? ""}
+                        onChange={(e) =>
+                          setMockStakeInputs((prev) => ({ ...prev, [topic.id]: e.target.value }))
+                        }
+                        onClick={(e) => e.preventDefault()}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleMockStake(topic.id, mockStakeInputs[topic.id] ?? "");
+                        }}
+                      >
+                        Stake
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>

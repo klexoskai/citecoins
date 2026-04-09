@@ -42,11 +42,13 @@ import {
 } from "lucide-react";
 import {
   useArticleActions,
+  useBucketActions,
+  useEpochActions,
   uploadToPinata,
   computeContentHash,
 } from "@/lib/contracts/hooks";
 import { useWallet } from "@/lib/contracts/wallet";
-import type { EvidenceItem } from "@/lib/contracts/types";
+import type { EvidenceItem, Bucket, EpochConfig } from "@/lib/contracts/types";
 
 const MIN_WRITER_STAKE = 10; // 10 CITE
 
@@ -83,7 +85,10 @@ export default function PublishPage() {
   const { address } = useWallet();
 
   // Parse ?epoch=X from hash query string
+  const [bucketId, setBucketId] = useState<string>("");
   const [epochId, setEpochId] = useState<string>("");
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [bucketEpochs, setBucketEpochs] = useState<EpochConfig[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [writerStake, setWriterStake] = useState<string>(
@@ -97,6 +102,8 @@ export default function PublishPage() {
   const [ipfsCID, setIpfsCID] = useState<string | null>(null);
 
   const { publishArticle } = useArticleActions();
+  const { getAllBuckets } = useBucketActions();
+  const { getEpoch, getNextEpochId } = useEpochActions();
 
   // Pre-fill epoch from query param
   useEffect(() => {
@@ -108,6 +115,47 @@ export default function PublishPage() {
       if (ep) setEpochId(ep);
     }
   }, []);
+
+  // Load buckets for selection
+  useEffect(() => {
+    getAllBuckets()
+      .then((bs) => setBuckets(bs.filter((b) => b.active)))
+      .catch(() => setBuckets([]));
+  }, [getAllBuckets]);
+
+  // If deep-linked by epoch, infer bucket
+  useEffect(() => {
+    if (!epochId) return;
+    getEpoch(Number(epochId))
+      .then((ep) => {
+        if (ep) setBucketId(String(ep.bucketId));
+      })
+      .catch(() => {});
+  }, [epochId, getEpoch]);
+
+  // Load epochs that belong to selected bucket
+  useEffect(() => {
+    if (!bucketId) {
+      setBucketEpochs([]);
+      return;
+    }
+    (async () => {
+      try {
+        const next = await getNextEpochId();
+        const rows: EpochConfig[] = [];
+        for (let i = 1; i < next; i++) {
+          const ep = await getEpoch(i);
+          if (ep && ep.bucketId === Number(bucketId)) rows.push(ep);
+        }
+        setBucketEpochs(rows);
+        if (epochId && !rows.some((r) => r.id === Number(epochId))) {
+          setEpochId("");
+        }
+      } catch {
+        setBucketEpochs([]);
+      }
+    })();
+  }, [bucketId, getEpoch, getNextEpochId, epochId]);
 
   function addEvidence() {
     setEvidence((prev) => [
@@ -266,19 +314,42 @@ export default function PublishPage() {
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label htmlFor="epochId">Epoch ID</Label>
-                  <Input
-                    id="epochId"
-                    type="number"
-                    min={1}
-                    placeholder="e.g. 1"
-                    value={epochId}
-                    onChange={(e) => setEpochId(e.target.value)}
-                    required
-                    data-testid="input-epoch-id"
-                  />
+                  <Label>Bucket</Label>
+                  <Select
+                    value={bucketId}
+                    onValueChange={(value) => {
+                      setBucketId(value);
+                      setEpochId("");
+                    }}
+                  >
+                    <SelectTrigger data-testid="select-bucket-id">
+                      <SelectValue placeholder="Select bucket" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {buckets.map((b) => (
+                        <SelectItem key={b.id} value={String(b.id)}>
+                          Bucket #{b.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-1.5">
+                  <Label>Epoch</Label>
+                  <Select value={epochId} onValueChange={setEpochId} disabled={!bucketId}>
+                    <SelectTrigger data-testid="select-epoch-id">
+                      <SelectValue placeholder={bucketId ? "Select epoch" : "Select bucket first"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {bucketEpochs.map((ep) => (
+                        <SelectItem key={ep.id} value={String(ep.id)}>
+                          Epoch #{ep.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5 col-span-2">
                   <div className="flex items-center gap-1.5">
                     <Label htmlFor="writerStake">Writer Stake (CITE)</Label>
                     <Tooltip>

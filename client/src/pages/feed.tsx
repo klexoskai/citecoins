@@ -1,13 +1,19 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { PlusCircle, Layers } from "lucide-react";
+import { PlusCircle, Layers, Coins } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useBucketActions, fetchFromIPFS } from "@/lib/contracts/hooks";
 import type { Bucket, TopicMetadata } from "@/lib/contracts/types";
-import { formatEther } from "ethers";
+import { formatEther, parseEther } from "ethers";
+import { MOCK_TOPICS } from "@/lib/mockContent";
+import { addTopicStake, getTopicStake } from "@/lib/mockStakes";
+import { useWallet } from "@/lib/contracts/wallet";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -20,7 +26,91 @@ function formatRewards(wei: bigint): string {
 
 // ── Bucket Card ───────────────────────────────────────────────────────────────
 
-function BucketCard({ bucket }: { bucket: Bucket }) {
+function StakeBucketDialog({
+  bucketId,
+  onSuccess,
+}: {
+  bucketId: number;
+  onSuccess: (amount: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [status, setStatus] = useState<"idle" | "pending" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const { fundBucket } = useBucketActions();
+  const { address } = useWallet();
+
+  const handleFund = async () => {
+    if (!amount || parseFloat(amount) <= 0) return;
+    setStatus("pending");
+    setErrorMsg("");
+    try {
+      await fundBucket(bucketId, amount);
+      onSuccess(amount);
+      setStatus("idle");
+      setAmount("");
+      setOpen(false);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Transaction failed";
+      setErrorMsg(msg);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" disabled={!address}>
+          Stake CITE
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-sm">
+        <div className="space-y-4">
+          <div>
+            <h2 className="font-serif text-base font-normal">Stake in Bucket #{bucketId}</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Add CITE to this bucket's pool to upvote the topic.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`stake-amount-${bucketId}`}>Amount (CITE)</Label>
+            <Input
+              id={`stake-amount-${bucketId}`}
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="0.00"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              disabled={status === "pending"}
+            />
+          </div>
+          {status === "error" && <p className="text-xs text-destructive">{errorMsg}</p>}
+          <div className="flex gap-2 justify-end">
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)} disabled={status === "pending"}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleFund}
+              disabled={status === "pending" || !amount || parseFloat(amount) <= 0}
+            >
+              {status === "pending" ? "Staking…" : "Confirm"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BucketCard({
+  bucket,
+  onStakeSuccess,
+}: {
+  bucket: Bucket;
+  onStakeSuccess: (bucketId: number, amount: string) => void;
+}) {
   const [topicData, setTopicData] = useState<TopicMetadata | null>(null);
 
   useEffect(() => {
@@ -38,11 +128,11 @@ function BucketCard({ bucket }: { bucket: Bucket }) {
   const tags = topicData?.tags ?? [];
 
   return (
-    <Link href={`/buckets/${bucket.id}`}>
-      <Card
-        className="group h-full cursor-pointer hover:border-primary/50 transition-colors"
-        data-testid={`bucket-card-${bucket.id}`}
-      >
+    <Card
+      className="group h-full hover:border-primary/50 transition-colors"
+      data-testid={`bucket-card-${bucket.id}`}
+    >
+      <Link href={`/buckets/${bucket.id}`}>
         <CardHeader className="pb-2 space-y-2">
           <div className="flex items-start justify-between gap-2">
             <span className="text-xs font-mono text-muted-foreground" data-testid={`bucket-id-${bucket.id}`}>
@@ -67,8 +157,9 @@ function BucketCard({ bucket }: { bucket: Bucket }) {
             {title}
           </h3>
         </CardHeader>
+      </Link>
 
-        <CardContent className="pt-0 space-y-3">
+      <CardContent className="pt-0 space-y-3">
           {description && (
             <p className="text-sm text-muted-foreground line-clamp-2" data-testid={`bucket-desc-${bucket.id}`}>
               {description}
@@ -94,16 +185,25 @@ function BucketCard({ bucket }: { bucket: Bucket }) {
             </div>
           )}
 
-          <div
-            className="flex items-center gap-1.5 text-xs text-muted-foreground"
-            data-testid={`bucket-rewards-${bucket.id}`}
-          >
-            <span className="text-primary font-medium">{formatRewards(bucket.fundedRewards)}</span>
-            <span>funded</span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
+        <div
+          className="flex items-center gap-1.5 text-xs text-muted-foreground"
+          data-testid={`bucket-rewards-${bucket.id}`}
+        >
+          <span className="text-primary font-medium">{formatRewards(bucket.fundedRewards)}</span>
+          <span>staked in bucket</span>
+        </div>
+
+        <div className="flex items-center gap-2 pt-1">
+          <Link href={`/buckets/${bucket.id}`}>
+            <Button size="sm" variant="outline">View</Button>
+          </Link>
+          <StakeBucketDialog
+            bucketId={bucket.id}
+            onSuccess={(amount) => onStakeSuccess(bucket.id, amount)}
+          />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -134,6 +234,37 @@ export default function Feed() {
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mockStakes, setMockStakes] = useState<Record<string, number>>({});
+  const [mockStakeInputs, setMockStakeInputs] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const next: Record<string, number> = {};
+    for (const topic of MOCK_TOPICS) {
+      next[topic.id] = getTopicStake(topic.id);
+    }
+    setMockStakes(next);
+  }, []);
+
+  const handleMockStake = (topicId: string, amountText: string) => {
+    const amount = Number(amountText);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const nextStake = addTopicStake(topicId, amount);
+    setMockStakes((prev) => ({ ...prev, [topicId]: nextStake }));
+    setMockStakeInputs((prev) => ({ ...prev, [topicId]: "" }));
+  };
+
+  const handleBucketStakeSuccess = (bucketId: number, amount: string) => {
+    try {
+      const delta = parseEther(amount);
+      setBuckets((prev) =>
+        prev.map((b) =>
+          b.id === bucketId ? { ...b, fundedRewards: b.fundedRewards + delta } : b
+        )
+      );
+    } catch {
+      // Ignore local optimistic update if parsing fails; on reload chain value still reflects truth.
+    }
+  };
 
   useEffect(() => {
     getAllBuckets()
@@ -187,25 +318,83 @@ export default function Feed() {
         </div>
       )}
 
-      {/* Empty state */}
+      {/* Empty state with built-in mock topics */}
       {!loading && !error && buckets.length === 0 && (
-        <div
-          className="flex flex-col items-center justify-center py-20 text-center"
-          data-testid="feed-empty"
-        >
-          <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-4">
-            <Layers size={22} className="text-muted-foreground" />
+        <div className="space-y-4" data-testid="feed-empty">
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-4">
+              <Layers size={22} className="text-muted-foreground" />
+            </div>
+            <p className="text-sm font-medium text-foreground mb-1">No on-chain topics yet</p>
+            <p className="text-sm text-muted-foreground mb-4">
+              Explore mock topics below or create your own bucket.
+            </p>
+            <Link href="/create-bucket">
+              <Button size="sm" className="gap-2" data-testid="feed-empty-cta">
+                <PlusCircle size={15} />
+                Create New Topic
+              </Button>
+            </Link>
           </div>
-          <p className="text-sm font-medium text-foreground mb-1">No topics yet</p>
-          <p className="text-sm text-muted-foreground mb-4">
-            Be the first to create a citation bounty topic.
-          </p>
-          <Link href="/create-bucket">
-            <Button size="sm" className="gap-2" data-testid="feed-empty-cta">
-              <PlusCircle size={15} />
-              Create New Topic
-            </Button>
-          </Link>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {MOCK_TOPICS.map((topic) => (
+              <Card key={topic.id} className="group h-full hover:border-primary/50 transition-colors">
+                  <div className="aspect-[16/8] w-full overflow-hidden rounded-t-lg border-b border-border">
+                    <img
+                      src={topic.imageUrl}
+                      alt={topic.title}
+                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                      loading="lazy"
+                    />
+                  </div>
+                <Link href={`/topics/${topic.id}`}>
+                  <CardHeader className="pb-2">
+                    <h3 className="font-serif text-base leading-snug group-hover:text-primary transition-colors">
+                      {topic.title}
+                    </h3>
+                  </CardHeader>
+                </Link>
+                <CardContent className="space-y-3">
+                    <p className="text-sm text-muted-foreground line-clamp-2">{topic.description}</p>
+                    <div className="flex flex-wrap gap-1">
+                      {topic.tags.map((tag) => (
+                        <Badge key={tag} variant="outline" className="text-xs px-1.5 py-0 h-5 font-normal">
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="text-primary font-medium">{(mockStakes[topic.id] ?? 0).toLocaleString()} CITE</span>
+                    <span>staked in topic</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Link href={`/topics/${topic.id}`}>
+                      <Button size="sm" variant="outline" className="shrink-0">Open</Button>
+                    </Link>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="Amount"
+                      className="h-8 w-full min-w-[96px] sm:w-24 flex-1"
+                      value={mockStakeInputs[topic.id] ?? ""}
+                      onChange={(e) =>
+                        setMockStakeInputs((prev) => ({ ...prev, [topic.id]: e.target.value }))
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => handleMockStake(topic.id, mockStakeInputs[topic.id] ?? "")}
+                    >
+                      Stake
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
 
@@ -216,7 +405,11 @@ export default function Feed() {
           data-testid="feed-grid"
         >
           {buckets.map((bucket) => (
-            <BucketCard key={bucket.id} bucket={bucket} />
+            <BucketCard
+              key={bucket.id}
+              bucket={bucket}
+              onStakeSuccess={handleBucketStakeSuccess}
+            />
           ))}
         </div>
       )}
