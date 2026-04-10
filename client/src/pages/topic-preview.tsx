@@ -104,11 +104,7 @@ export default function TopicPreviewPage() {
               <p className="text-sm text-muted-foreground">{article.excerpt}</p>
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  <span className="text-primary font-semibold">
-                    {readStake(article.id).total.toLocaleString()} CITE
-                  </span>{" "}
-                  staked
-                  <div className="mt-0.5">
+                  <div>
                     You staked:{" "}
                     <span className="font-medium text-foreground">
                       {readStake(article.id).mine.toLocaleString()} CITE

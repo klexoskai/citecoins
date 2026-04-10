@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { PlusCircle, Layers, Coins } from "lucide-react";
+import { PlusCircle, Coins } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,15 +61,15 @@ function StakeBucketDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button size="sm" disabled={!address}>
-          Stake CITE
+          Fund CITE
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-sm">
         <div className="space-y-4">
           <div>
-            <h2 className="font-serif text-base font-normal">Stake in Bucket #{bucketId}</h2>
+            <h2 className="font-serif text-base font-normal">Fund Bucket #{bucketId}</h2>
             <p className="text-sm text-muted-foreground mt-1">
-              Add CITE to this bucket's pool to upvote the topic.
+              Add CITE to this bucket&apos;s reward pool.
             </p>
           </div>
           <div className="space-y-1.5">
@@ -95,7 +95,7 @@ function StakeBucketDialog({
               onClick={handleFund}
               disabled={status === "pending" || !amount || parseFloat(amount) <= 0}
             >
-              {status === "pending" ? "Staking…" : "Confirm"}
+              {status === "pending" ? "Funding…" : "Confirm"}
             </Button>
           </div>
         </div>
@@ -291,7 +291,7 @@ export default function Feed() {
         <Link href="/create-bucket">
           <Button size="sm" className="gap-2" data-testid="create-bucket-cta">
             <PlusCircle size={15} />
-            Create New Topic
+            Create New Bucket
           </Button>
         </Link>
       </div>
@@ -318,25 +318,9 @@ export default function Feed() {
         </div>
       )}
 
-      {/* Empty state with built-in mock topics */}
+      {/* Topic grid */}
       {!loading && !error && buckets.length === 0 && (
-        <div className="space-y-4" data-testid="feed-empty">
-          <div className="flex flex-col items-center justify-center py-8 text-center">
-            <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-4">
-              <Layers size={22} className="text-muted-foreground" />
-            </div>
-            <p className="text-sm font-medium text-foreground mb-1">No on-chain topics yet</p>
-            <p className="text-sm text-muted-foreground mb-4">
-              Explore mock topics below or create your own bucket.
-            </p>
-            <Link href="/create-bucket">
-              <Button size="sm" className="gap-2" data-testid="feed-empty-cta">
-                <PlusCircle size={15} />
-                Create New Topic
-              </Button>
-            </Link>
-          </div>
-
+        <div data-testid="feed-empty">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {MOCK_TOPICS.map((topic) => (
               <Card key={topic.id} className="group h-full hover:border-primary/50 transition-colors">
@@ -388,7 +372,7 @@ export default function Feed() {
                       className="shrink-0"
                       onClick={() => handleMockStake(topic.id, mockStakeInputs[topic.id] ?? "")}
                     >
-                      Stake
+                      Fund
                     </Button>
                   </div>
                 </CardContent>

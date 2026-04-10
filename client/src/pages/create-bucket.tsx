@@ -154,7 +154,7 @@ export default function CreateBucket() {
             <div className="space-y-1.5">
               <p className="text-sm font-medium flex items-center gap-2">
                 <Sparkles size={14} className="text-primary" />
-                Create a citation bounty bucket
+                Create a bounty bucket
               </p>
               <p className="text-xs text-muted-foreground">
                 Wallet status is checked first so you can publish smoothly.
@@ -194,10 +194,10 @@ export default function CreateBucket() {
       <Card data-testid="create-bucket-card">
         <CardHeader className="pb-4">
           <CardTitle className="font-serif text-xl font-normal" data-testid="create-bucket-title">
-            Create New Topic
+            Create New Bucket
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Define a citation bounty topic. Metadata is stored on IPFS, the bucket lives on-chain.
+            Define your bounty bucket. Metadata is stored on IPFS, the bucket lives on-chain.
           </p>
         </CardHeader>
 
