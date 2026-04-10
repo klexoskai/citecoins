@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 contract ReputationManager {
-
     event ReputationUpdated(address indexed voter, uint256 newBonus, bool won);
 
     // effectiveRep = 1 + reputationBonus; scoring uses sqrt(effectiveRep * rawStake)
@@ -38,5 +37,26 @@ contract ReputationManager {
             if (reputationBonus[voter] > 0) reputationBonus[voter] -= 1;
         }
         emit ReputationUpdated(voter, reputationBonus[voter], won);
+    }
+
+    function reputationOfAll(
+        address reader1,
+        address reader2,
+        address reader3,
+        address reader4
+    )
+        external
+        view
+        returns (
+            uint256 reader1_REP,
+            uint256 reader2_REP,
+            uint256 reader3_REP,
+            uint256 reader4_REP
+        )
+    {
+        reader1_REP = this.effectiveRep(reader1);
+        reader2_REP = this.effectiveRep(reader2);
+        reader3_REP = this.effectiveRep(reader3);
+        reader4_REP = this.effectiveRep(reader4);
     }
 }
