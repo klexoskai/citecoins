@@ -4,7 +4,7 @@ const hre = require("hardhat");
 describe("Rewards", function () {
   let Protocol, protocol;
   let token, buckets, epochs, articles, staking, rewards;
-  let owner, writer, reader1, reader2;
+  let owner, writer, writer2, reader1, reader2;
 
   const ONE = 10n ** 18n;
   const INITIAL_SUPPLY = 1_000_000n * ONE;
@@ -14,10 +14,11 @@ describe("Rewards", function () {
   const WRITER_POOL = 500n * ONE;
 
   const CONTENT_HASH = "0x1234567890123456789012345678901234567890123456789012345678901234";
+  const CONTENT_HASH_2 = "0x2234567890123456789012345678901234567890123456789012345678901234";
   const MANIFEST_HASH = "0x3334567890123456789012345678901234567890123456789012345678901234";
 
   beforeEach(async function () {
-    [owner, writer, reader1, reader2] = await hre.ethers.getSigners();
+    [owner, writer, writer2, reader1, reader2] = await hre.ethers.getSigners();
 
     Protocol = await hre.ethers.getContractFactory("CitecoinsProtocol");
     protocol = await Protocol.deploy(INITIAL_SUPPLY);
@@ -35,6 +36,7 @@ describe("Rewards", function () {
 
     // distribute tokens
     await token.connect(owner).transfer(writer.address, 100n * ONE);
+    await token.connect(owner).transfer(writer2.address, 100n * ONE);
     await token.connect(owner).transfer(reader1.address, 100n * ONE);
     await token.connect(owner).transfer(reader2.address, 100n * ONE);
 
@@ -51,13 +53,23 @@ describe("Rewards", function () {
     await hre.network.provider.send("evm_increaseTime", [11]);
     await hre.network.provider.send("evm_mine");
 
-    // publish article
+    // publish 2 articles — need at least 2 with reader support for finalization to proceed
     await token.connect(writer).approve(await articles.getAddress(), WRITER_STAKE);
     await articles.connect(writer).publishArticle(
       1,
-      "ipfs://QmArticleContent",
+      "ipfs://QmArticleContent1",
       CONTENT_HASH,
-      "ipfs://QmManifestContent",
+      "ipfs://QmManifestContent1",
+      MANIFEST_HASH,
+      WRITER_STAKE
+    );
+
+    await token.connect(writer2).approve(await articles.getAddress(), WRITER_STAKE);
+    await articles.connect(writer2).publishArticle(
+      1,
+      "ipfs://QmArticleContent2",
+      CONTENT_HASH_2,
+      "ipfs://QmManifestContent2",
       MANIFEST_HASH,
       WRITER_STAKE
     );
@@ -66,7 +78,7 @@ describe("Rewards", function () {
     await hre.network.provider.send("evm_increaseTime", [11]);
     await hre.network.provider.send("evm_mine");
 
-    // commit votes during staking phase
+    // reader1 votes article 1, reader2 votes article 2
     const salt1 = hre.ethers.encodeBytes32String("salt_reader1");
     const salt2 = hre.ethers.encodeBytes32String("salt_reader2");
 
@@ -79,7 +91,7 @@ describe("Rewards", function () {
     const hash2 = hre.ethers.keccak256(
       hre.ethers.AbiCoder.defaultAbiCoder().encode(
         ["uint256", "uint256", "bytes32"],
-        [1, 1, salt2]
+        [1, 2, salt2]
       )
     );
 
@@ -89,13 +101,12 @@ describe("Rewards", function () {
     await staking.connect(reader1).commitVote(1, hash1, READER_STAKE);
     await staking.connect(reader2).commitVote(1, hash2, READER_STAKE);
 
-    // move past staking end so reveals are allowed (Phase.Ended)
+    // move past staking end — reveals only allowed in Phase.Ended
     await hre.network.provider.send("evm_increaseTime", [40]);
     await hre.network.provider.send("evm_mine");
 
-    // reveal votes during Ended phase
     await staking.connect(reader1).revealVote(1, 1, salt1);
-    await staking.connect(reader2).revealVote(1, 1, salt2);
+    await staking.connect(reader2).revealVote(1, 2, salt2);
   });
 
   it("Should finalize after epoch end", async function () {
@@ -120,7 +131,7 @@ describe("Rewards", function () {
     expect(after).to.be.gt(before);
   });
 
-  it("Should let supporting reader claim after finalization", async function () {
+  it("Should let winning reader claim after finalization", async function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
@@ -130,10 +141,11 @@ describe("Rewards", function () {
     await rewards.connect(reader1).claimReader(1);
     const after = await token.balanceOf(reader1.address);
 
+    // reader1 backed article 1 (wins) — gets rawStake principal back
     expect(after).to.be.gt(before);
   });
 
-  it("Should let second supporting reader claim after finalization", async function () {
+  it("Should let second winning reader claim after finalization", async function () {
     const ownerBal = await token.balanceOf(owner.address);
     if (ownerBal === 0n) this.skip();
 
@@ -143,12 +155,13 @@ describe("Rewards", function () {
     await rewards.connect(reader2).claimReader(1);
     const after = await token.balanceOf(reader2.address);
 
+    // reader2 backed article 2 (wins) — gets rawStake principal back
     expect(after).to.be.gt(before);
   });
 
   it("Should revert if trying to finalize before epoch end", async function () {
     // fresh deployment for early-finalize test
-    [owner, writer, reader1, reader2] = await hre.ethers.getSigners();
+    [owner] = await hre.ethers.getSigners();
 
     Protocol = await hre.ethers.getContractFactory("CitecoinsProtocol");
     protocol = await Protocol.deploy(INITIAL_SUPPLY);

@@ -15,18 +15,17 @@ describe("CitecoinsProtocol", function () {
 
   describe("Deployment", function () {
     it("Should deploy protocol", async function () {
-      // ensure that protocol is deployed and has a valid address
       expect(await protocol.getAddress()).to.properAddress;
     });
 
     it("Should deploy and expose child contract addresses", async function () {
-      // ensure that all child contracts are deployed and their addresses are exposed by the protocol + valid addresses
       expect(await protocol.token()).to.properAddress;
       expect(await protocol.buckets()).to.properAddress;
       expect(await protocol.epochs()).to.properAddress;
       expect(await protocol.articles()).to.properAddress;
       expect(await protocol.staking()).to.properAddress;
       expect(await protocol.rewards()).to.properAddress;
+      expect(await protocol.repManager()).to.properAddress;
     });
   });
 });
