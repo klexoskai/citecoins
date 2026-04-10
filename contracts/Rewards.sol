@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-
 import "./interfaces/ICitecoinToken.sol";
 import "./interfaces/IBucketManager.sol";
 import "./interfaces/IEpochManager.sol";
@@ -149,6 +148,11 @@ contract Rewards {
         emit EpochFinalized(epochId, bucketId, nPaid, readerPool);
     }
 
+    /// @notice Finalize epoch using whole CITE units for writer pool instead of wei.
+    function finalizeEpochCITE(uint256 epochId, uint256 writerPoolAmount_CITE) external {
+        this.finalizeEpoch(epochId, writerPoolAmount_CITE * 1e18);
+    }
+    
     function _finalizeInner(
         uint256          epochId,
         uint256          bucketId,
@@ -156,6 +160,7 @@ contract Rewards {
         uint256[] memory winners,
         uint256          writerPoolAmount
     ) internal returns (uint256 readerPool) {
+        // Sum raw stakes on losing articles
         uint256 S_lose = 0;
         for (uint256 i = 0; i < articleIds.length; i++) {
             if (_rankOf(winners, articleIds[i]) == 0) {
@@ -163,6 +168,7 @@ contract Rewards {
             }
         }
 
+        // Reader pool = losing reader stakes + slashed writer stakes, minus 5% fee
         uint256 slashedWriterStake = _settleWriterStakes(articleIds, winners, uint8(winners.length));
         uint256 readerPoolBase = S_lose + slashedWriterStake;
         uint256 feeTaken = (readerPoolBase * bucketManager.FEE_BPS()) / 10_000;
@@ -264,6 +270,7 @@ contract Rewards {
         }
     }
 
+    // Returns total slashed writer stakes — added to reader pool in _finalizeInner
     function _settleWriterStakes(
         uint256[] memory allArticles,
         uint256[] memory winners,
@@ -278,8 +285,10 @@ contract Rewards {
             if (writerStake == 0) continue;
 
             if (rank != 0 && rank <= nPaid) {
+                // Winners get their stake back
                 articleRegistry.releaseStake(articleId, author);
             } else {
+                // Losers get slashed — returned to reader pool
                 totalSlashed += articleRegistry.slashStake(articleId);
             }
         }
@@ -394,5 +403,16 @@ contract Rewards {
                 rawTies[pos] = raw;
             }
         }
+    }
+
+    /// @notice Returns epoch results in whole CITE units instead of wei.
+    function resultsCITE(uint256 epochId) external view returns (
+        bool    finalized,
+        uint8   nPaid,
+        uint256 writerPool_CITE,
+        uint256 readerPool_CITE
+    ) {
+        EpochResult storage r = results[epochId];
+        return (r.finalized, r.nPaid, r.writerPool / 1e18, r.readerPool / 1e18);
     }
 }

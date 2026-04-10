@@ -97,6 +97,53 @@ contract ArticleRegistry {
         emit ArticlePublished(articleId, bucketId, epochId, msg.sender, contentCID);
     }
 
+    /// @notice Publish article using whole CITE units instead of wei.
+    function publishArticleCITE(
+        uint256 epochId,
+        string  calldata contentCID,
+        bytes32 contentHash,
+        string  calldata manifestCID,
+        bytes32 manifestHash,
+        uint256 writerStake_CITE
+    ) external returns (uint256 articleId) {
+        require(
+            epochManager.currentPhase(epochId) == IEpochManager.Phase.Submission,
+            "not in submission window"
+        );
+        require(bytes(contentCID).length  > 0, "contentCID required");
+        require(contentHash  != bytes32(0),    "contentHash required");
+        require(bytes(manifestCID).length > 0, "manifestCID required");
+        require(manifestHash != bytes32(0),    "manifestHash required");
+
+        uint256 writerStake = writerStake_CITE * 1e18;
+
+        require(writerStake >= MIN_WRITER_STAKE, "stake too low");
+        require(
+            token.transferFrom(msg.sender, address(this), writerStake),
+            "stake transfer failed"
+        );
+
+        // Read bucketId from epoch — stored on article for convenience
+        (uint256 bucketId,,,,,) = epochManager.getEpoch(epochId);
+
+        articleId = nextArticleId++;
+        _articles[articleId] = Article({
+            author:       msg.sender,
+            bucketId:     bucketId,
+            epochId:      epochId,
+            contentCID:   contentCID,
+            contentHash:  contentHash,
+            manifestCID:  manifestCID,
+            manifestHash: manifestHash,
+            writerStake:  writerStake,
+            eligible:     true
+        });
+
+        epochArticles[epochId].push(articleId);
+
+        emit ArticlePublished(articleId, bucketId, epochId, msg.sender, contentCID);
+    }
+
     function releaseStake(uint256 articleId, address to) external onlyRewards {
         Article storage a = _articles[articleId];
         require(a.writerStake > 0, "nothing to release");

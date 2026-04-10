@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-
 import "./interfaces/ICitecoinToken.sol";
 import "./interfaces/IEpochManager.sol";
 import "./interfaces/IArticleRegistry.sol";
@@ -88,10 +87,42 @@ contract Staking {
             epochManager.currentPhase(epochId) == IEpochManager.Phase.Staking,
             "not in staking window"
         );
-
         require(!hasCommitted[epochId][msg.sender], "already committed");
         require(rawStake   > 0,            "zero stake");
         require(commitHash != bytes32(0),  "empty commit");
+        require(
+            token.transferFrom(msg.sender, address(this), rawStake),
+            "stake transfer failed"
+        );
+
+        commits[epochId][msg.sender] = Commit({
+            commitHash:     commitHash,
+            rawStake:       rawStake,
+            revealed:       false,
+            articleId:      0,
+            effectiveStake: 0
+        });
+
+        hasCommitted[epochId][msg.sender] = true;
+
+        emit VoteCommitted(epochId, msg.sender, commitHash, rawStake);
+    }
+
+    /// @notice Commit vote using whole CITE units instead of wei.
+    function commitVoteCITE(
+        uint256 epochId,
+        bytes32 commitHash,
+        uint256 rawStake_CITE
+    ) external {
+        require(
+            epochManager.currentPhase(epochId) == IEpochManager.Phase.Staking,
+            "not in staking window"
+        );
+        require(!hasCommitted[epochId][msg.sender], "already committed");
+        require(rawStake_CITE > 0,           "zero stake");
+        require(commitHash != bytes32(0),    "empty commit");
+
+        uint256 rawStake = rawStake_CITE * 1e18;
 
         require(
             token.transferFrom(msg.sender, address(this), rawStake),
