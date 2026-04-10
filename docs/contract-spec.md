@@ -30,7 +30,8 @@ This document is the code-oriented specification for Citecoins v1 contracts.
 4. `ArticleRegistry.sol` — article submission and writer stakes
 5. `Staking.sol` — commit-reveal voting and reader stakes
 6. `Rewards.sol` — finalization and reward distribution
-7. `CitecoinsProtocol.sol` — deploys and wires all contracts
+7. `ReputationManager.sol` — per-voter reputation tracking (win/loss history)
+8. `CitecoinsProtocol.sol` — deploys and wires all contracts
 
 ---
 
@@ -97,7 +98,7 @@ struct Commit {
     uint256 rawStake;       // tokens locked at commit time
     bool    revealed;
     uint256 articleId;      // set at reveal time
-    uint256 effectiveStake; // sqrt(rawStake), computed at reveal
+    uint256 effectiveStake; // sqrt(rep * rawStake), computed at reveal
 }
 ```
 
@@ -121,7 +122,8 @@ function winnersCount(uint256 A) internal pure returns (uint8) {
 
 ### 3.2 Quadratic influence (ranking only)
 On reveal of `rawStake` tokens:
-- `eff = isqrt(rawStake)`
+- `rep = reputationManager.effectiveRep(voter)` (= 1 + reputationBonus; floor 1 for new voters)
+- `eff = isqrt(rep * rawStake)`
 - `totalEffStake[epochId][articleId] += eff`
 - Ranking uses `totalEffStake`, not raw.
 
@@ -131,8 +133,9 @@ Among winning voters, `readerPool` is split proportionally to `effectiveStake`:
 - Each winning voter also gets back their `rawStake` principal.
 
 ### 3.4 Protocol fee
-- `fee = S_lose * FEE_BPS / 10000` (5% of losing raw stakes)
-- `readerPool = S_lose - fee`
+- `readerPoolBase = S_lose + slashedWriterStakes` (losing reader stakes + slashed writer stakes)
+- `fee = readerPoolBase * FEE_BPS / 10000` (5% of combined base)
+- `readerPool = readerPoolBase - fee`
 
 ---
 
@@ -231,7 +234,7 @@ Constraints:
 - Must be in `Phase.Ended`
 - Recomputes `keccak256(abi.encode(epochId, articleId, salt))` and verifies against stored `commitHash`
 - Article must be eligible and belong to the epoch
-- Sets `effectiveStake = isqrt(rawStake)`, updates tally
+- Sets `effectiveStake = isqrt(rep * rawStake)`, updates tally
 - Adds voter to `stakerList[epochId][articleId]` (iterated by Rewards at finalization)
 
 **Stake reclaim** (for voters who committed but never revealed):
@@ -260,7 +263,7 @@ Finalize algorithm:
 3. If fewer than 2 articles have reader support: slash bucket creator stake, mark finalized, exit
 4. Compute `nPaid = winnersCount(supportedCount)`
 5. Select top `nPaid` by `effectiveStake` from supported articles (insertion sort, tie-break: raw stake desc, articleId asc)
-6. Compute `S_lose` and `readerPool = S_lose - fee`
+6. Compute `S_lose`; settle writer stakes and collect `slashedWriterStakes`; `readerPool = (S_lose + slashedWriterStakes) * 0.95`
 7. Slash losing reader stakes → transferred to `Rewards`
 8. Settle writer stakes (release winners, slash losers; 0-reveal articles already settled in step 2)
 9. Pull `writerPoolAmount` from bucket into `Rewards`
@@ -308,7 +311,7 @@ Reader payout:
 function isqrt(uint256 x) internal pure returns (uint256 y);
 ```
 
-Used at reveal time for quadratic influence. Whale with 10000 tokens gets `sqrt(10000) = 100` weight.
+Used at reveal time for quadratic influence. `effectiveStake = isqrt(rep * rawStake)`. A new voter (rep=1) with 10000 tokens gets `sqrt(10000) = 100` weight; a voter with rep=4 gets `sqrt(4 * 10000) = 200`.
 
 ### 5.2 Ranking selection — top-k without full sort
 
@@ -365,8 +368,9 @@ event ReaderClaimed(uint256 indexed epochId, address indexed reader, uint256 amo
 - Losing stake is not returned to losers
 
 ### Stake conservation
-- Total slashed losing stakes = `S_lose`
-- `readerPool = S_lose - fee` distributed to winning readers
+- Total slashed losing reader stakes = `S_lose`
+- Slashed losing writer stakes = `slashedWriterStakes`
+- `readerPool = (S_lose + slashedWriterStakes) - fee` distributed to winning readers
 - `fee` stays in Rewards contract (protocol treasury)
 - Writer pool drawn exactly from bucket's `fundedRewards`
 

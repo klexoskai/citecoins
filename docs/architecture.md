@@ -72,7 +72,7 @@ Responsibilities:
 
 **Commit-reveal flow:**
 1. **Commit** (during Staking phase): voter locks tokens and submits `commitHash = keccak256(abi.encode(epochId, articleId, salt))`. Vote is hidden.
-2. **Reveal** (only after Phase.Ended): voter submits plaintext `(epochId, articleId, salt)`. Contract verifies hash, then computes `effectiveStake = sqrt(rawStake)` and adds to tally.
+2. **Reveal** (only after Phase.Ended): voter submits plaintext `(epochId, articleId, salt)`. Contract verifies hash, then computes `effectiveStake = sqrt(rep * rawStake)` and adds to tally.
 
 One commit per voter per epoch; no topping up.
 
@@ -137,8 +137,8 @@ Reads events to power feeds, profiles, and stake positions:
 ## 4) Ranking (Influence) vs Rewards (Economic Payout)
 
 ### 4.1 Influence / ranking metric (quadratic)
-For each revealed vote of `x` tokens:
-- `eff = sqrt(x)`
+For each revealed vote of `x` tokens by voter with reputation `rep`:
+- `eff = sqrt(rep * x)`
 - `effStake(article) += eff`
 
 Ranking:
@@ -151,9 +151,11 @@ Writer rewards are drawn from the bucket's `fundedRewards` pool, specified at `f
 Rank-based exponential decay (see Section 6 below).
 
 ### 4.3 Economic payout — reader rewards
-- `S_lose = Σ rawStake(losing articles)`
-- `fee = S_lose * 5%` (protocol fee)
-- `readerPool = S_lose - fee`
+- `S_lose = Σ rawStake(losing reader stakes)`
+- `slashedWriterStakes = Σ writerStake(losing articles)`
+- `readerPoolBase = S_lose + slashedWriterStakes`
+- `fee = readerPoolBase * 5%` (protocol fee)
+- `readerPool = readerPoolBase - fee`
 
 Winning readers receive back their `rawStake` principal plus a share of `readerPool` proportional to their `effectiveStake` (quadratic).
 
@@ -190,14 +192,15 @@ Then:
 ## 7) Reader Rewards Calculation
 
 ### 7.1 Define pools
-- `S_win = Σ_{a in W} rawStake(a)` (raw stakes on winning articles)
-- `S_lose = Σ_{a not in W} rawStake(a)` (raw stakes on losing articles)
-- `fee = 5% * S_lose`
-- `readerPool = S_lose - fee`
+- `S_lose = Σ_{a not in W} rawStake(a)` (raw reader stakes on losing articles)
+- `slashedWriterStakes = Σ_{a not in W} writerStake(a)` (slashed writer stakes from losing articles)
+- `readerPoolBase = S_lose + slashedWriterStakes`
+- `fee = 5% * readerPoolBase`
+- `readerPool = readerPoolBase - fee`
 
 ### 7.2 Payout per reader
 For each winning reader `u`:
-- `userWeighted = effectiveStake(u)` on winning articles (i.e. `sqrt(rawStake(u))`)
+- `userWeighted = effectiveStake(u)` on winning articles (i.e. `sqrt(rep * rawStake(u))`)
 - `totalWeighted = Σ effectiveStake(i)` across all revealed winning voters
 - `rewardShare = (userWeighted / totalWeighted) * readerPool`
 - `payout(u) = rawStake(u) + rewardShare`
