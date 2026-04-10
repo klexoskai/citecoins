@@ -168,10 +168,8 @@ contract Rewards {
             }
         }
 
-        // Settle writer stakes — losing writer stakes are slashed and added to reader pool
-        uint256 slashedWriterStake = _settleWriterStakes(articleIds, winners, uint8(winners.length));
-
         // Reader pool = losing reader stakes + slashed writer stakes, minus 5% fee
+        uint256 slashedWriterStake = _settleWriterStakes(articleIds, winners, uint8(winners.length));
         uint256 readerPoolBase = S_lose + slashedWriterStake;
         uint256 feeTaken = (readerPoolBase * bucketManager.FEE_BPS()) / 10_000;
         readerPool = readerPoolBase - feeTaken;

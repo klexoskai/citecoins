@@ -141,17 +141,18 @@ We define two stake measures:
 1) **Raw stake** (real tokens at risk):
 - `rawStake(u, article) = tokens u staked on article`
 
-2) **Effective stake** (influence/ranking only):
-- `effStake(u, article) = sqrt(rawStake(u, article))`
+2) **Effective stake** (influence/ranking and reward share):
+- `effStake(u, article) = sqrt(rep(u) * rawStake(u, article))`
+- `rep(u) = 1 + reputationBonus(u)` (floor 1 for new voters)
 
 Aggregate per-article:
 - `rawStake(article) = sum_u rawStake(u, article)`
-- `effStake(article) = sum_u sqrt(rawStake(u, article))`
+- `effStake(article) = sum_u sqrt(rep(u) * rawStake(u, article))`
 
 **Ranking uses `effStake(article)`**
-**Rewards use `rawStake(u, article)`**
+**Reader reward share uses `effStake(u)` proportionally among winning voters**
 
-This reduces whale domination in outcome selection while preserving capital-proportional payouts.
+This reduces whale domination in outcome selection; reputation gives consistent winners greater long-term influence.
 
 ### 5.2 Define winning set W
 At finalize time:
@@ -161,13 +162,15 @@ At finalize time:
 
 ### 5.3 Redistribution math
 Let:
-- `S_lose = sum_{a not in W} rawStake(a)`
-- `fee = 5% * S_lose` (protocol fee, `FEE_BPS = 500`)
-- `readerPool = S_lose - fee`
+- `S_lose = sum_{a not in W} rawStake(a)` (losing reader stakes)
+- `slashedWriterStakes = sum_{a not in W} writerStake(a)` (losing writer stakes)
+- `readerPoolBase = S_lose + slashedWriterStakes`
+- `fee = 5% * readerPoolBase` (protocol fee, `FEE_BPS = 500`)
+- `readerPool = readerPoolBase - fee`
 
 Winning readers receive back their `rawStake` principal plus a share of `readerPool`:
 - `rewardShare(u) = (effectiveStake(u) / totalEffStake(winners)) * readerPool`
-  where `effectiveStake(u) = sqrt(rawStake(u))`
+  where `effectiveStake(u) = sqrt(rep(u) * rawStake(u))`
 
 Total received at claim:
 - `payout(u) = rawStake(u) + rewardShare(u)`
@@ -211,7 +214,7 @@ Recommended v1:
 - Topic creation stake with participation thresholds
 - Publish fee (small) OR per-epoch publish cap per address
 - Quadratic influence for ranking only
-- Time-weighted redistribution for early staking advantage
+- Reputation multiplier rewards consistent accurate voters over time
 
 Future (v2+):
 - writer submission stake slashing

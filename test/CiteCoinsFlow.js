@@ -4,7 +4,7 @@ const hre = require("hardhat");
 describe("CitecoinsFlow", function () {
   let Protocol, protocol;
   let token, buckets, epochs, articles, staking, rewards;
-  let owner, writer1, writer2, reader4, reader5, reader6, others;
+  let owner, writer1, writer2, writer3, writer4, reader5, reader6, reader7, reader8;
 
   const ONE = 10n ** 18n;
   const INITIAL_SUPPLY = 1_000_000n * ONE;
@@ -16,11 +16,15 @@ describe("CitecoinsFlow", function () {
 
   const CONTENT_HASH_1 = "0x1234567890123456789012345678901234567890123456789012345678901234";
   const CONTENT_HASH_2 = "0x2234567890123456789012345678901234567890123456789012345678901234";
-  const MANIFEST_HASH_1 = "0x3334567890123456789012345678901234567890123456789012345678901234";
-  const MANIFEST_HASH_2 = "0x4434567890123456789012345678901234567890123456789012345678901234";
+  const CONTENT_HASH_3 = "0x3334567890123456789012345678901234567890123456789012345678901234";
+  const CONTENT_HASH_4 = "0x4434567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH_1 = "0x5534567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH_2 = "0x6634567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH_3 = "0x7734567890123456789012345678901234567890123456789012345678901234";
+  const MANIFEST_HASH_4 = "0x8834567890123456789012345678901234567890123456789012345678901234";
 
   beforeEach(async function () {
-    [owner, writer1, writer2, reader4, reader5, reader6, ...others] =
+    [owner, writer1, writer2, writer3, writer4, reader5, reader6, reader7, reader8] =
       await hre.ethers.getSigners();
 
     Protocol = await hre.ethers.getContractFactory("CitecoinsProtocol");
@@ -49,25 +53,17 @@ describe("CitecoinsFlow", function () {
     return { salt, hash };
   }
 
-  it("should run the full happy path with 2 articles and 3 readers", async function () {
-    // Make sure this deployment path gives owner the initial supply
+  it("should run the full happy path with 4 articles and 4 readers", async function () {
     const ownerBal = await token.balanceOf(owner.address);
     expect(ownerBal).to.equal(INITIAL_SUPPLY);
 
     // =========================================================
     // Step 1 — Distribute tokens
     // =========================================================
-    await token.connect(owner).transfer(writer1.address, USER_ALLOCATION);
-    await token.connect(owner).transfer(writer2.address, USER_ALLOCATION);
-    await token.connect(owner).transfer(reader4.address, USER_ALLOCATION);
-    await token.connect(owner).transfer(reader5.address, USER_ALLOCATION);
-    await token.connect(owner).transfer(reader6.address, USER_ALLOCATION);
-
-    expect(await token.balanceOf(writer1.address)).to.equal(USER_ALLOCATION);
-    expect(await token.balanceOf(writer2.address)).to.equal(USER_ALLOCATION);
-    expect(await token.balanceOf(reader4.address)).to.equal(USER_ALLOCATION);
-    expect(await token.balanceOf(reader5.address)).to.equal(USER_ALLOCATION);
-    expect(await token.balanceOf(reader6.address)).to.equal(USER_ALLOCATION);
+    for (const acct of [writer1, writer2, writer3, writer4, reader5, reader6, reader7, reader8]) {
+      await token.connect(owner).transfer(acct.address, USER_ALLOCATION);
+      expect(await token.balanceOf(acct.address)).to.equal(USER_ALLOCATION);
+    }
 
     // =========================================================
     // Step 2 — Create and fund bucket
@@ -84,7 +80,8 @@ describe("CitecoinsFlow", function () {
 
     const bucket = await buckets.getBucket(1);
     expect(bucket[2]).to.equal(WRITER_POOL); // fundedRewards
-    expect(bucket[4]).to.equal(true);        // active
+    expect(bucket[3]).to.equal(BUCKET_STAKE); // creatorStake
+    expect(bucket[4]).to.equal(true);         // active
 
     // =========================================================
     // Step 3 — Create epoch
@@ -92,18 +89,12 @@ describe("CitecoinsFlow", function () {
     const now = (await hre.ethers.provider.getBlock("latest")).timestamp;
 
     const submissionStart = now + 60;
-    const submissionEnd = now + 120;
-    const stakingStart = now + 120;
-    const stakingEnd = now + 240;
+    const submissionEnd   = now + 120;
+    const stakingStart    = now + 120;
+    const stakingEnd      = now + 240;
 
     await expect(
-      epochs.connect(owner).createEpoch(
-        1,
-        submissionStart,
-        submissionEnd,
-        stakingStart,
-        stakingEnd
-      )
+      epochs.connect(owner).createEpoch(1, submissionStart, submissionEnd, stakingStart, stakingEnd)
     ).to.not.be.reverted;
 
     expect(await epochs.currentPhase(1)).to.equal(0); // NotStarted
@@ -112,88 +103,74 @@ describe("CitecoinsFlow", function () {
     expect(await epochs.currentPhase(1)).to.equal(1); // Submission
 
     // =========================================================
-    // Step 4 — Submit 2 articles
+    // Step 4 — Submit 4 articles
     // =========================================================
-    await token.connect(writer1).approve(await articles.getAddress(), WRITER_STAKE);
-    await token.connect(writer2).approve(await articles.getAddress(), WRITER_STAKE);
+    const writers = [writer1, writer2, writer3, writer4];
+    const contentHashes = [CONTENT_HASH_1, CONTENT_HASH_2, CONTENT_HASH_3, CONTENT_HASH_4];
+    const manifestHashes = [MANIFEST_HASH_1, MANIFEST_HASH_2, MANIFEST_HASH_3, MANIFEST_HASH_4];
 
-    await expect(
-      articles.connect(writer1).publishArticle(
-        1,
-        "ipfs://QmArticleContent1",
-        CONTENT_HASH_1,
-        "ipfs://QmManifestContent1",
-        MANIFEST_HASH_1,
-        WRITER_STAKE
-      )
-    ).to.not.be.reverted;
-
-    await expect(
-      articles.connect(writer2).publishArticle(
-        1,
-        "ipfs://QmArticleContent2",
-        CONTENT_HASH_2,
-        "ipfs://QmManifestContent2",
-        MANIFEST_HASH_2,
-        WRITER_STAKE
-      )
-    ).to.not.be.reverted;
+    for (let i = 0; i < 4; i++) {
+      await token.connect(writers[i]).approve(await articles.getAddress(), WRITER_STAKE);
+      await expect(
+        articles.connect(writers[i]).publishArticle(
+          1,
+          `ipfs://QmArticleContent${i + 1}`,
+          contentHashes[i],
+          `ipfs://QmManifestContent${i + 1}`,
+          manifestHashes[i],
+          WRITER_STAKE
+        )
+      ).to.not.be.reverted;
+    }
 
     const epochArticles = await articles.getEpochArticles(1);
-    expect(epochArticles.map((x) => BigInt(x))).to.deep.equal([1n, 2n]);
+    expect(epochArticles.map((x) => BigInt(x))).to.deep.equal([1n, 2n, 3n, 4n]);
 
     await increaseTime(61);
     expect(await epochs.currentPhase(1)).to.equal(2); // Staking
 
     // =========================================================
     // Step 5 — Commit votes
-    // reader4 -> article 1
-    // reader5 -> article 1
-    // reader6 -> article 2
+    // reader5 -> article 1 (wins)
+    // reader6 -> article 2 (wins)
+    // reader7 -> article 3 (wins)
+    // reader8 -> article 4 (loses — stake slashed)
+    // 4 articles: winnersCount(4) = max(floor(4/2), 3) = 3 → articles 1,2,3 win
     // =========================================================
-    const c4 = makeCommitHash(1, 1, "salt_reader4");
     const c5 = makeCommitHash(1, 1, "salt_reader5");
     const c6 = makeCommitHash(1, 2, "salt_reader6");
+    const c7 = makeCommitHash(1, 3, "salt_reader7");
+    const c8 = makeCommitHash(1, 4, "salt_reader8");
 
-    await token.connect(reader4).approve(await staking.getAddress(), READER_STAKE);
-    await token.connect(reader5).approve(await staking.getAddress(), READER_STAKE);
-    await token.connect(reader6).approve(await staking.getAddress(), READER_STAKE);
-
-    await expect(
-      staking.connect(reader4).commitVote(1, c4.hash, READER_STAKE)
-    ).to.not.be.reverted;
-
-    await expect(
-      staking.connect(reader5).commitVote(1, c5.hash, READER_STAKE)
-    ).to.not.be.reverted;
-
-    await expect(
-      staking.connect(reader6).commitVote(1, c6.hash, READER_STAKE)
-    ).to.not.be.reverted;
+    for (const [reader, commit] of [
+      [reader5, c5], [reader6, c6], [reader7, c7], [reader8, c8]
+    ]) {
+      await token.connect(reader).approve(await staking.getAddress(), READER_STAKE);
+      await expect(
+        staking.connect(reader).commitVote(1, commit.hash, READER_STAKE)
+      ).to.not.be.reverted;
+    }
 
     // =========================================================
     // Step 6 — Advance past staking end, then reveal votes
-    // revealVote is only allowed in Phase.Ended
     // =========================================================
     await increaseTime(121);
     expect(await epochs.currentPhase(1)).to.equal(3); // Ended
 
-    await expect(
-      staking.connect(reader4).revealVote(1, 1, c4.salt)
-    ).to.not.be.reverted;
+    await expect(staking.connect(reader5).revealVote(1, 1, c5.salt)).to.not.be.reverted;
+    await expect(staking.connect(reader6).revealVote(1, 2, c6.salt)).to.not.be.reverted;
+    await expect(staking.connect(reader7).revealVote(1, 3, c7.salt)).to.not.be.reverted;
+    await expect(staking.connect(reader8).revealVote(1, 4, c8.salt)).to.not.be.reverted;
 
-    await expect(
-      staking.connect(reader5).revealVote(1, 1, c5.salt)
-    ).to.not.be.reverted;
-
-    await expect(
-      staking.connect(reader6).revealVote(1, 2, c6.salt)
-    ).to.not.be.reverted;
-
-    const support1 = await staking.getTally(1, 1);
-    const support2 = await staking.getTally(1, 2);
-
-    expect(support1).to.be.gt(support2);
+    // one reader per article — all tallies equal; tiebreak by lower articleId → rank 1,2,3,4
+    const t1 = await staking.getTally(1, 1);
+    const t2 = await staking.getTally(1, 2);
+    const t3 = await staking.getTally(1, 3);
+    const t4 = await staking.getTally(1, 4);
+    expect(t1).to.equal(t2);
+    expect(t2).to.equal(t3);
+    expect(t3).to.equal(t4);
+    expect(t1).to.be.gt(0n);
 
     // =========================================================
     // Step 7 — Finalize
@@ -209,41 +186,29 @@ describe("CitecoinsFlow", function () {
     // Step 8 — Claim rewards
     // =========================================================
 
-    // Writer 1 (article 1, winning article) claims
-    const writer1Before = await token.balanceOf(writer1.address);
-    await expect(
-      rewards.connect(writer1).claimWriter(1, 1)
-    ).to.not.be.reverted;
-    const writer1After = await token.balanceOf(writer1.address);
-    expect(writer1After).to.be.gt(writer1Before);
+    // Writers 1,2,3 (articles 1–3, winning) claim writer pool payouts
+    for (const [writer, articleId] of [[writer1, 1], [writer2, 2], [writer3, 3]]) {
+      const before = await token.balanceOf(writer.address);
+      await expect(rewards.connect(writer).claimWriter(1, articleId)).to.not.be.reverted;
+      const after = await token.balanceOf(writer.address);
+      expect(after).to.be.gt(before);
+    }
 
-    // Reader 4 (backed winning article 1) claims stake + reward share
-    const reader4Before = await token.balanceOf(reader4.address);
-    await expect(
-      rewards.connect(reader4).claimReader(1)
-    ).to.not.be.reverted;
-    const reader4After = await token.balanceOf(reader4.address);
-    expect(reader4After).to.be.gt(reader4Before);
+    // Writer 4 (article 4, losing) cannot claim
+    await expect(rewards.connect(writer4).claimWriter(1, 4)).to.be.reverted;
 
-    // Reader 5 (backed winning article 1) claims stake + reward share
-    const reader5Before = await token.balanceOf(reader5.address);
-    await expect(
-      rewards.connect(reader5).claimReader(1)
-    ).to.not.be.reverted;
-    const reader5After = await token.balanceOf(reader5.address);
-    expect(reader5After).to.be.gt(reader5Before);
+    // Readers 5,6,7 (backed winning articles) — get stake back + reader pool share
+    for (const reader of [reader5, reader6, reader7]) {
+      const before = await token.balanceOf(reader.address);
+      await expect(rewards.connect(reader).claimReader(1)).to.not.be.reverted;
+      const after = await token.balanceOf(reader.address);
+      expect(after).to.be.gt(before);
+    }
 
-    // Reader 6 (backed losing article 2) — stake slashed, no payout
-    const reader6Before = await token.balanceOf(reader6.address);
-    await expect(
-      rewards.connect(reader6).claimReader(1)
-    ).to.not.be.reverted;
-    const reader6After = await token.balanceOf(reader6.address);
-    expect(reader6After).to.equal(reader6Before);
-
-    // Writer 2 (losing article) cannot claim writer payout
-    await expect(
-      rewards.connect(writer2).claimWriter(1, 2)
-    ).to.be.reverted;
+    // Reader 8 (backed losing article 4) — stake slashed at finalization, no payout
+    const reader8Before = await token.balanceOf(reader8.address);
+    await expect(rewards.connect(reader8).claimReader(1)).to.not.be.reverted;
+    const reader8After = await token.balanceOf(reader8.address);
+    expect(reader8After).to.equal(reader8Before); // no payout, stake already slashed
   });
 });
