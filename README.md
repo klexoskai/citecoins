@@ -54,7 +54,7 @@ generate/
 
 ### Actors
 - **Writers**: Publish articles with evidence manifests. Stake CITE to enter. Earn ranked rewards if their article wins.
-- **Readers / Voters**: Commit blinded votes (with staked CITE) on articles they believe will rank highest. Earn a share of losing reader stakes if they back a winner.
+- **Readers / Voters**: Commit blinded votes (with staked CITE) on articles they believe will rank highest. Earn a share of losing reader stakes and slashed writer stakes if they back a winner.
 - **Funders**: Create topic buckets and deposit reward pools for writers.
 
 ### Objects
@@ -75,7 +75,7 @@ generate/
 
 3. **`EpochManager`** — Creates time-windowed epochs for a bucket. Single source of truth for phase gating across all contracts. Phases: `NotStarted → Submission → Staking → Ended`.
 
-4. **`ArticleRegistry`** — Writers publish during Submission phase. Requires `≥ 10 CITE` writer stake and a non-empty evidence manifest (`manifestCID` + `manifestHash`). Writer stake is released to winners and slashed from losers at finalization.
+4. **`ArticleRegistry`** — Writers publish during Submission phase. Requires `≥ 10 CITE` writer stake and a non-empty evidence manifest (`manifestCID` + `manifestHash`). Winner writer stakes are released at finalization; loser writer stakes are slashed and added to the reader pool.
 
 5. **`Staking`** — Commit-reveal voting system:
    - **Commit** (Staking phase): lock CITE, submit `keccak256(abi.encode(epochId, articleId, salt))`
@@ -173,9 +173,10 @@ npx hardhat run scripts/demoFlow.js --network localhost
 
 To test manually in [Remix IDE](https://remix.ethereum.org):
 
-1. Compile and deploy `CitecoinsProtocol.sol` with `initialSupply = 1000000000000000000000000` (1M CITE)
+1. Compile and deploy `CitecoinsProtocol.sol` with `initialSupply = 10000000000000000000000000` (10M CITE)
 2. Read each contract address from the deployed protocol instance (`token()`, `buckets()`, `epochs()`, etc.)
-3. Use `generate/generate.mjs` to pre-compute commit hashes before the staking phase:
+3. Load each sub-contract via "At Address" in the Deploy tab
+4. Use `generate/generate.mjs` to pre-compute commit hashes before the staking phase:
 
 ```bash
 cd generate
@@ -184,6 +185,8 @@ node generate.mjs
 
 This outputs the `commitVote` hashes and `revealVote` salts for all test accounts.
 
+> Most user-facing functions have CITE-denominated variants (e.g. `transferCITE`, `approveCITE`, `publishArticleCITE`, `commitVoteCITE`, `createBucketCITE`, `fundBucketCITE`) that accept whole token amounts instead of wei for easier manual testing.
+
 See `docs/` for the full step-by-step Remix walkthrough.
 
 ---
@@ -191,11 +194,11 @@ See `docs/` for the full step-by-step Remix walkthrough.
 ## Demo Flow (Summary)
 
 1. Deploy `CitecoinsProtocol(initialSupply)`
-2. Approve + `BucketManager.createBucket(topicURI, 100e18)`
-3. `BucketManager.fundBucket(bucketId, amount)`
+2. Approve + `BucketManager.createBucketCITE(topicURI, 100)`
+3. `BucketManager.fundBucketCITE(bucketId, 500)`
 4. `EpochManager.createEpoch(bucketId, submissionStart, submissionEnd, stakingStart, stakingEnd)`
-5. Writers: approve + `ArticleRegistry.publishArticle(epochId, contentCID, contentHash, manifestCID, manifestHash, writerStake)`
-6. Readers: approve + `Staking.commitVote(epochId, keccak256(abi.encode(epochId, articleId, salt)), rawStake)`
+5. Writers: approve + `ArticleRegistry.publishArticleCITE(epochId, contentCID, contentHash, manifestCID, manifestHash, 10)`
+6. Readers: approve + `Staking.commitVoteCITE(epochId, keccak256(abi.encode(epochId, articleId, salt)), 50)`
 7. After epoch ends: `Staking.revealVote(epochId, articleId, salt)`
 8. `Rewards.finalizeEpoch(epochId, writerPoolAmount)`
 9. Writers: `Rewards.claimWriter(epochId, articleId)` | Readers: `Rewards.claimReader(epochId)`
@@ -207,6 +210,7 @@ See `docs/` for the full step-by-step Remix walkthrough.
 Stored off-chain (IPFS), anchored on-chain via `manifestCID` + `manifestHash`.
 
 Minimal fields:
+
 ```json
 {
   "createdAt": "...",
