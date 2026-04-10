@@ -14,7 +14,7 @@ Coordinated actors stake to push an article into the top-ranked set.
 ### v1 mitigations
 - Quadratic influence (sqrt) reduces marginal influence of whales
 - Topic-specific buckets reduce scope of manipulation
-- Time-weighted redistribution rewards early conviction and reduces last-minute bandwagons
+- Commit-reveal voting prevents last-minute bandwagoning (votes hidden until epoch ends)
 
 Residual risk remains: coordinated sybils can still manipulate.
 
@@ -70,7 +70,7 @@ Users wait until the last moment and pile into the expected winner.
 Bots publish many low-quality articles to capture tail rewards or distract.
 
 ### Mitigations
-- Winner count bounded: `nPaid = clamp(A, 3, 10)` (no unlimited tail)
+- Winner count bounded: `nPaid = clamp(floor(A/2), 3, 10)` (no unlimited tail)
 - Publish fee and/or per-epoch article caps per address
 - Evidence manifest requirement for eligibility
 - Bucket topic creation stake disincentivizes low-quality buckets
